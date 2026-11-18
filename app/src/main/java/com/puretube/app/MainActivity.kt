@@ -59,7 +59,10 @@ import com.puretube.app.playback.PlaybackService
 import com.puretube.app.playback.PipActionReceiver
 import com.puretube.app.playback.PocketVolumeSkipDetector
 import com.puretube.app.ui.components.MiniPlayerDock
+import com.puretube.app.ui.screens.channel.ChannelScreen
 import com.puretube.app.ui.screens.library.LibraryScreen
+import com.puretube.app.ui.screens.playlist.LocalPlaylistScreen
+import com.puretube.app.ui.screens.playlist.RemotePlaylistScreen
 import com.puretube.app.ui.screens.player.VideoPlayerScreen
 import com.puretube.app.ui.screens.search.SearchScreen
 import com.puretube.app.ui.screens.settings.FlatSettingsScreen
@@ -388,19 +391,70 @@ private fun PureTubeNav(
         ) {
             NavHost(navController = navController, startDestination = startRoute) {
                 composable("subscriptions") {
-                    SubscriptionsScreen(onVideoClick = { videoId ->
-                        navController.navigate("player/$videoId")
-                    })
+                    SubscriptionsScreen(
+                        onVideoClick = { videoId -> navController.navigate("player/$videoId") },
+                        onChannelClick = { channelId ->
+                            navController.navigate("channel/${android.net.Uri.encode(channelId)}")
+                        }
+                    )
                 }
                 composable("search") {
-                    SearchScreen(onVideoClick = { videoId ->
-                        navController.navigate("player/$videoId")
-                    })
+                    SearchScreen(
+                        onVideoClick = { videoId -> navController.navigate("player/$videoId") },
+                        onChannelClick = { channelId ->
+                            navController.navigate("channel/${android.net.Uri.encode(channelId)}")
+                        }
+                    )
                 }
                 composable("library") {
-                    LibraryScreen(onVideoClick = { videoId ->
-                        navController.navigate("player/$videoId")
-                    })
+                    LibraryScreen(
+                        onVideoClick = { videoId -> navController.navigate("player/$videoId") },
+                        onChannelClick = { channelId ->
+                            navController.navigate("channel/${android.net.Uri.encode(channelId)}")
+                        },
+                        onLocalPlaylistClick = { playlistId ->
+                            navController.navigate("playlist/$playlistId")
+                        },
+                        onRemotePlaylistClick = { url ->
+                            navController.navigate("remotePlaylist/${android.net.Uri.encode(url)}")
+                        }
+                    )
+                }
+                composable(
+                    route = "channel/{channelId}",
+                    arguments = listOf(navArgument("channelId") { type = NavType.StringType })
+                ) { entry ->
+                    ChannelScreen(
+                        channelIdOrUrl = entry.arguments?.getString("channelId").orEmpty(),
+                        onVideoClick = { videoId -> navController.navigate("player/$videoId") },
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+                composable(
+                    route = "playlist/{playlistId}",
+                    arguments = listOf(navArgument("playlistId") { type = NavType.LongType })
+                ) { entry ->
+                    LocalPlaylistScreen(
+                        playlistId = entry.arguments?.getLong("playlistId") ?: 0L,
+                        onVideoClick = { videoId -> navController.navigate("player/$videoId") },
+                        onChannelClick = { channelId ->
+                            navController.navigate("channel/${android.net.Uri.encode(channelId)}")
+                        },
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+                composable(
+                    route = "remotePlaylist/{url}",
+                    arguments = listOf(navArgument("url") { type = NavType.StringType })
+                ) { entry ->
+                    RemotePlaylistScreen(
+                        playlistUrl = entry.arguments?.getString("url").orEmpty(),
+                        onVideoClick = { videoId -> navController.navigate("player/$videoId") },
+                        onChannelClick = { channelId ->
+                            navController.navigate("channel/${android.net.Uri.encode(channelId)}")
+                        },
+                        onBack = { navController.popBackStack() }
+                    )
                 }
                 composable("settings") {
                     FlatSettingsScreen()
@@ -413,7 +467,11 @@ private fun PureTubeNav(
                     VideoPlayerScreen(
                         videoId = videoId,
                         controller = controller,
-                        onBack = { navController.popBackStack() }
+                        onBack = { navController.popBackStack() },
+                        onVideoClick = { nextId -> navController.navigate("player/$nextId") },
+                        onChannelClick = { channelId ->
+                            navController.navigate("channel/${android.net.Uri.encode(channelId)}")
+                        }
                     )
                 }
             }
