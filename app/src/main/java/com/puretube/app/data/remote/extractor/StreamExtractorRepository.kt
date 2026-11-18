@@ -34,7 +34,7 @@ class StreamExtractorRepository(
     private val pipedFallbackBaseUrlProvider: () -> String
 ) {
     companion object {
-        private val VIDEO_ID_REGEX = Regex("(?:youtube\.com/shorts/|youtu\.be/|v=|youtube\.com/embed/)([a-zA-Z0-9_-]{11})")
+        private val VIDEO_ID_REGEX = Regex("(?:youtube\\.com/shorts/|youtu\\.be/|v=|youtube\\.com/embed/)([a-zA-Z0-9_-]{11})")
         private val BARE_ID_REGEX = Regex("^[a-zA-Z0-9_-]{11}$")
 
         fun extractVideoId(rawUrlOrId: String): String {
@@ -140,8 +140,7 @@ class StreamExtractorRepository(
             val handler = service.searchQHFactory.fromQuery(
                 query,
                 listOf(
-                    org.schabi.newpipe.extractor.services.youtube.search.filter
-                        .YoutubeSearchQueryHandlerFactory.VIDEOS
+                    org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory.VIDEOS
                 ),
                 ""
             )
