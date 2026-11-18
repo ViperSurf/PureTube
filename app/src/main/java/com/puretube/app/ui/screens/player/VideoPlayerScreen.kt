@@ -401,13 +401,19 @@ fun VideoPlayerScreen(
         val text = buildString {
             appendLine("PureTube diagnostics")
             appendLine("Video: $videoId")
-            appendLine("Title: $displayTitle")
+            appendLine("Title: ${displayTitle.ifBlank { resolved?.title ?: "" }}")
             appendLine("Status: $status")
             appendLine("Fatal: ${fatalError ?: "none"}")
             appendLine("Player error: ${playerState.playerError ?: "none"}")
             appendLine("Stream kind: ${currentKind?.name ?: "none"}")
+            appendLine("Source stage: ${resolved?.sourceStage ?: "none"}")
             appendLine("DASH: ${resolved?.dashManifestUrl != null} HLS: ${resolved?.hlsUrl != null}")
             appendLine("Progressive: ${resolved?.videoStreamUrl != null}")
+            val log = resolved?.diagnosticsLog?.takeIf { it.isNotBlank() }
+            if (log != null) {
+                appendLine("Extraction log:")
+                appendLine(log)
+            }
         }
         runCatching {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

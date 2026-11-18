@@ -3,16 +3,27 @@ package com.puretube.app.data.remote.extractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.schabi.newpipe.extractor.Page
 import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.channel.ChannelInfoItem
+import org.schabi.newpipe.extractor.linkhandler.SearchQueryHandler
+import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.schabi.newpipe.extractor.playlist.PlaylistInfoItem
 import org.schabi.newpipe.extractor.search.SearchInfo
+import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import com.puretube.app.domain.CommentItem
+import com.puretube.app.domain.ErrorText
+import com.puretube.app.domain.FailoverLog
+import com.puretube.app.domain.PlaylistUrl
+import com.puretube.app.domain.StageResult
 
 data class ResolvedVideoStream(
     val videoId: String,
@@ -27,7 +38,58 @@ data class ResolvedVideoStream(
     val hlsUrl: String?,
     val videoStreamUrl: String?,
     val audioOnlyStreamUrl: String,
-    val thumbnailUrl: String
+    val thumbnailUrl: String,
+    /** Which failover stage produced this stream (v1.2 diagnostics). */
+    val sourceStage: String = "",
+    /** One line per stage tried, in order (v1.2 diagnostics). */
+    val diagnosticsLog: String = ""
+)
+
+/** Search content filter (v1.2). */
+enum class SearchTypeFilter(val factoryValue: String) {
+    ALL(YoutubeSearchQueryHandlerFactory.ALL),
+    VIDEOS(YoutubeSearchQueryHandlerFactory.VIDEOS),
+    PLAYLISTS(YoutubeSearchQueryHandlerFactory.PLAYLISTS),
+    CHANNELS(YoutubeSearchQueryHandlerFactory.CHANNELS)
+}
+
+enum class SearchHitType { VIDEO, PLAYLIST, CHANNEL }
+
+data class ChannelHit(
+    val channelId: String,
+    val name: String,
+    val avatarUrl: String,
+    val subscriberCount: Long,
+    val description: String,
+    val url: String
+)
+
+data class PlaylistHit(
+    val url: String,
+    val title: String,
+    val channelName: String,
+    val thumbnailUrl: String,
+    val streamCount: Long
+)
+
+/** One mixed search result (v1.2): exactly one payload field is non-null. */
+data class SearchHit(
+    val type: SearchHitType,
+    val video: FeedItem? = null,
+    val playlist: PlaylistHit? = null,
+    val channel: ChannelHit? = null
+) {
+    val stableKey: String
+        get() = when (type) {
+            SearchHitType.VIDEO -> "v:${video?.videoId}"
+            SearchHitType.PLAYLIST -> "p:${playlist?.url}"
+            SearchHitType.CHANNEL -> "c:${channel?.channelId}"
+        }
+}
+
+data class SearchPageResult(
+    val hits: List<SearchHit>,
+    val hasMore: Boolean
 )
 
 class StreamExtractorRepository(
@@ -47,6 +109,25 @@ class StreamExtractorRepository(
 
         fun normalizeAndStripShortsUrl(rawUrlOrId: String): String =
             "https://www.youtube.com/watch?v=${extractVideoId(rawUrlOrId)}"
+
+        /** Built-in Piped API instances tried after the user's own (v1.2). */
+        val BUILTIN_PIPED_INSTANCES = listOf(
+            "https://pipedapi.kavin.rocks",
+            "https://pipedapi.adminforge.de",
+            "https://pipedapi.reallyaweso.me",
+            "https://api.piped.projectsegfau.lt",
+            "https://pipedapi.leptons.xyz",
+            "https://pipedapi-libre.kavin.rocks"
+        )
+
+        /** Built-in Invidious API instances (v1.2). */
+        val BUILTIN_INVIDIOUS_INSTANCES = listOf(
+            "https://inv.nadeko.net",
+            "https://invidious.privacyredirect.com",
+            "https://inv.us.projectsegfau.lt",
+            "https://yewtu.be",
+            "https://invidious.0011.lt"
+        )
     }
 
     fun normalizeAndStripShortsUrl(rawUrlOrId: String): String =
@@ -54,9 +135,19 @@ class StreamExtractorRepository(
 
     fun extractVideoId(rawUrlOrId: String): String = Companion.extractVideoId(rawUrlOrId)
 
+    // ------------------------------------------------------------------
+    // Stream extraction with multi-stage failover (v1.2)
+    // ------------------------------------------------------------------
+
     /**
-     * NewPipeExtractor first; on failure (403 / bot guard / cipher rotation)
-     * silently fails over to the configured Piped API. No user-facing popups.
+     * Stages, in order, each logged into the returned stream's diagnostics
+     * (or into the failure message when all stages fail):
+     * 1. NewPipeExtractor primary. 2. NewPipeExtractor retry (fresh extractor;
+     *    first attempts can fail on a transient token/consent fetch).
+     * 3. Piped: the user's configured instance, then built-in instances.
+     * 4. Invidious: built-in instances.
+     * No stage throws to the caller except the final aggregated failure,
+     * whose message lists every stage's outcome.
      */
     suspend fun extractStreamWithFailover(
         rawUrlOrId: String,
@@ -66,98 +157,275 @@ class StreamExtractorRepository(
     ): Result<ResolvedVideoStream> = withContext(Dispatchers.IO) {
         val canonicalUrl = normalizeAndStripShortsUrl(rawUrlOrId)
         val videoId = extractVideoId(rawUrlOrId)
+        val stages = mutableListOf<StageResult>()
 
-        val primaryAttempt = runCatching {
-            val info = StreamInfo.getInfo(ServiceList.YouTube, canonicalUrl)
-            val bestAudio = runCatching {
-                val matching = preferredAudioLanguageCode?.let { code ->
-                    info.audioStreams.filter {
-                        runCatching { it.audioLocale?.language == code }.getOrDefault(false)
-                    }
-                }.orEmpty()
-                (matching.maxByOrNull { it.averageBitrate }
-                    ?: info.audioStreams.maxByOrNull { it.averageBitrate })
-                    ?.content
-            }.getOrNull() ?: info.audioStreams.maxByOrNull { it.averageBitrate }?.content
-                ?: error("No audio stream found")
-
-            val bestVideo = info.videoOnlyStreams
-                .filter { parseHeight(it.resolution) <= preferredMaxHeight || preferredMaxHeight <= 0 }
-                .sortedWith(
-                    compareByDescending<org.schabi.newpipe.extractor.stream.VideoStream> {
-                        if (preferAv1Vp9) {
-                            val name = it.format?.name.orEmpty()
-                            name.contains("AV1") || name.contains("VP9")
-                        } else {
-                            false
-                        }
-                    }.thenByDescending { parseHeight(it.resolution) }
+        fun succeed(stage: String, stream: ResolvedVideoStream): Result<ResolvedVideoStream> {
+            stages.add(StageResult(stage, true, "streams found"))
+            return Result.success(
+                stream.copy(
+                    sourceStage = stage,
+                    diagnosticsLog = FailoverLog.summary(stages)
                 )
-                .firstOrNull()?.content
-                ?: info.videoStreams.firstOrNull()?.content
-
-            ResolvedVideoStream(
-                videoId = videoId,
-                title = info.name,
-                uploaderName = info.uploaderName,
-                uploaderId = info.uploaderUrl.substringAfterLast("/"),
-                uploaderAvatarUrl = info.uploaderAvatars.firstOrNull()?.url.orEmpty(),
-                durationSeconds = info.duration,
-                viewCount = info.viewCount,
-                likeCount = info.likeCount,
-                dashManifestUrl = info.dashMpdUrl.takeIf { it.isNotBlank() },
-                hlsUrl = info.hlsUrl.takeIf { it.isNotBlank() },
-                videoStreamUrl = bestVideo,
-                audioOnlyStreamUrl = bestAudio,
-                thumbnailUrl = info.thumbnails.maxByOrNull { it.height }?.url.orEmpty()
             )
         }
-        if (primaryAttempt.isSuccess) return@withContext primaryAttempt
 
-        runCatching {
-            val baseUrl = pipedFallbackBaseUrlProvider().trimEnd('/')
-            val req = Request.Builder().url("$baseUrl/streams/$videoId").build()
-            okHttpClient.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) error("Failover HTTP ${resp.code}")
-                val root = Json.parseToJsonElement(resp.body!!.string()).jsonObject
-                val audioUrl = root["audioStreams"]!!.jsonArray
-                    .first().jsonObject["url"]!!.jsonPrimitive.content
-                val videoUrl = root["videoStreams"]!!.jsonArray
-                    .firstOrNull()?.jsonObject?.get("url")?.jsonPrimitive?.content
-                ResolvedVideoStream(
-                    videoId = videoId,
-                    title = root["title"]?.jsonPrimitive?.content.orEmpty(),
-                    uploaderName = root["uploader"]?.jsonPrimitive?.content.orEmpty(),
-                    uploaderId = root["uploaderUrl"]?.jsonPrimitive?.content?.substringAfterLast("/").orEmpty(),
-                    uploaderAvatarUrl = root["uploaderAvatar"]?.jsonPrimitive?.content.orEmpty(),
-                    durationSeconds = root["duration"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                    viewCount = root["views"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                    likeCount = root["likes"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
-                    dashManifestUrl = root["dash"]?.jsonPrimitive?.content,
-                    hlsUrl = root["hls"]?.jsonPrimitive?.content,
-                    videoStreamUrl = videoUrl,
-                    audioOnlyStreamUrl = audioUrl,
-                    thumbnailUrl = root["thumbnailUrl"]?.jsonPrimitive?.content.orEmpty()
-                )
+        // Stages 1-2: NewPipe primary + one retry.
+        for (attempt in 1..2) {
+            val stageName = if (attempt == 1) "NewPipe" else "NewPipe retry"
+            val attemptResult = runCatching {
+                extractViaNewPipe(canonicalUrl, videoId, preferredMaxHeight, preferAv1Vp9, preferredAudioLanguageCode)
             }
+            attemptResult.getOrNull()?.let { return@withContext succeed(stageName, it) }
+            stages.add(
+                StageResult(stageName, false, ErrorText.describe(attemptResult.exceptionOrNull()))
+            )
+        }
+
+        // Stage 3: Piped across instances (user's first, then built-ins).
+        val pipedInstances = (listOf(pipedFallbackBaseUrlProvider()) + BUILTIN_PIPED_INSTANCES)
+            .map { it.trim().trimEnd('/') }
+            .filter { it.isNotBlank() }
+            .distinct()
+        for (instance in pipedInstances) {
+            val stageName = "Piped $instance"
+            val attemptResult = runCatching { extractViaPiped(instance, videoId) }
+            attemptResult.getOrNull()?.let { return@withContext succeed(stageName, it) }
+            stages.add(
+                StageResult(stageName, false, ErrorText.describe(attemptResult.exceptionOrNull(), 200))
+            )
+        }
+
+        // Stage 4: Invidious across instances.
+        for (instance in BUILTIN_INVIDIOUS_INSTANCES) {
+            val stageName = "Invidious $instance"
+            val attemptResult = runCatching { extractViaInvidious(instance, videoId) }
+            attemptResult.getOrNull()?.let { return@withContext succeed(stageName, it) }
+            stages.add(
+                StageResult(stageName, false, ErrorText.describe(attemptResult.exceptionOrNull(), 200))
+            )
+        }
+
+        Result.failure(RuntimeException(FailoverLog.finalMessage(videoId, stages)))
+    }
+
+    private fun extractViaNewPipe(
+        canonicalUrl: String,
+        videoId: String,
+        preferredMaxHeight: Int,
+        preferAv1Vp9: Boolean,
+        preferredAudioLanguageCode: String?
+    ): ResolvedVideoStream {
+        val info = StreamInfo.getInfo(ServiceList.YouTube, canonicalUrl)
+        val bestAudio = runCatching {
+            val matching = preferredAudioLanguageCode?.let { code ->
+                info.audioStreams.filter {
+                    runCatching { it.audioLocale?.language == code }.getOrDefault(false)
+                }
+            }.orEmpty()
+            (matching.maxByOrNull { it.averageBitrate }
+                ?: info.audioStreams.maxByOrNull { it.averageBitrate })
+                ?.content
+        }.getOrNull() ?: info.audioStreams.maxByOrNull { it.averageBitrate }?.content
+            ?: error("No audio stream found")
+
+        val bestVideo = info.videoOnlyStreams
+            .filter { parseHeight(it.resolution) <= preferredMaxHeight || preferredMaxHeight <= 0 }
+            .sortedWith(
+                compareByDescending<org.schabi.newpipe.extractor.stream.VideoStream> {
+                    if (preferAv1Vp9) {
+                        val name = runCatching { it.format?.name }.getOrNull().orEmpty()
+                        name.contains("AV1") || name.contains("VP9")
+                    } else {
+                        false
+                    }
+                }.thenByDescending { parseHeight(it.resolution) }
+            )
+            .firstOrNull()?.content
+            ?: info.videoStreams.firstOrNull()?.content
+
+        if (bestVideo == null && info.dashMpdUrl.isNullOrBlank() && info.hlsUrl.isNullOrBlank()) {
+            error("Extractor returned no playable streams")
+        }
+
+        return ResolvedVideoStream(
+            videoId = videoId,
+            title = info.name,
+            uploaderName = info.uploaderName,
+            uploaderId = info.uploaderUrl.substringAfterLast("/"),
+            uploaderAvatarUrl = info.uploaderAvatars.firstOrNull()?.url.orEmpty(),
+            durationSeconds = info.duration,
+            viewCount = info.viewCount,
+            likeCount = info.likeCount,
+            dashManifestUrl = info.dashMpdUrl.takeIf { it.isNotBlank() },
+            hlsUrl = info.hlsUrl.takeIf { it.isNotBlank() },
+            videoStreamUrl = bestVideo,
+            audioOnlyStreamUrl = bestAudio,
+            thumbnailUrl = info.thumbnails.maxByOrNull { it.height }?.url.orEmpty()
+        )
+    }
+
+    private fun extractViaPiped(baseUrl: String, videoId: String): ResolvedVideoStream {
+        val req = Request.Builder().url("$baseUrl/streams/$videoId").build()
+        okHttpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+            val root = Json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+            if (root["error"] != null && root["videoStreams"] == null) {
+                error("Piped error: ${root["error"]?.jsonPrimitive?.content}")
+            }
+            val audioStreams = root["audioStreams"]?.jsonArray.orEmpty()
+            val audioUrl = audioStreams
+                .maxByOrNull {
+                    it.jsonObject["bitrate"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+                }?.jsonObject?.get("url")?.jsonPrimitive?.content
+            val videoStreams = root["videoStreams"]?.jsonArray.orEmpty()
+            val progressive = videoStreams.firstOrNull {
+                it.jsonObject["videoOnly"]?.jsonPrimitive?.content == "false"
+            } ?: videoStreams.firstOrNull()
+            val videoUrl = progressive?.jsonObject?.get("url")?.jsonPrimitive?.content
+            val dash = root["dash"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+            val hls = root["hls"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+            if (audioUrl == null && videoUrl == null && dash == null && hls == null) {
+                error("Piped returned no streams")
+            }
+            return ResolvedVideoStream(
+                videoId = videoId,
+                title = root["title"]?.jsonPrimitive?.content.orEmpty(),
+                uploaderName = root["uploader"]?.jsonPrimitive?.content.orEmpty(),
+                uploaderId = root["uploaderUrl"]?.jsonPrimitive?.content?.substringAfterLast("/").orEmpty(),
+                uploaderAvatarUrl = root["uploaderAvatar"]?.jsonPrimitive?.content.orEmpty(),
+                durationSeconds = root["duration"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                viewCount = root["views"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                likeCount = root["likes"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                dashManifestUrl = dash,
+                hlsUrl = hls,
+                videoStreamUrl = videoUrl,
+                audioOnlyStreamUrl = audioUrl.orEmpty(),
+                thumbnailUrl = root["thumbnailUrl"]?.jsonPrimitive?.content.orEmpty()
+            )
         }
     }
 
-    /** Instant search via NewPipe; Shorts are stripped by the caller/UI layer. */
-    suspend fun searchVideos(query: String): Result<List<FeedItem>> = withContext(Dispatchers.IO) {
-        runCatching {
-            val service = ServiceList.YouTube
-            val handler = service.searchQHFactory.fromQuery(
-                query,
-                listOf(
-                    org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQueryHandlerFactory.VIDEOS
-                ),
-                ""
+    private fun extractViaInvidious(baseUrl: String, videoId: String): ResolvedVideoStream {
+        val req = Request.Builder().url("$baseUrl/api/v1/videos/$videoId").build()
+        okHttpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) error("HTTP ${resp.code}")
+            val root = Json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+            if (root["error"] != null && root["formatStreams"] == null) {
+                error("Invidious error: ${root["error"]?.jsonPrimitive?.content}")
+            }
+            val formatStreams = root["formatStreams"]?.jsonArray.orEmpty()
+            val progressive = formatStreams.firstOrNull()
+                ?.jsonObject?.get("url")?.jsonPrimitive?.content
+            val adaptive = root["adaptiveFormats"]?.jsonArray.orEmpty()
+            val audioUrl = adaptive
+                .filter {
+                    it.jsonObject["type"]?.jsonPrimitive?.content?.startsWith("audio") == true
+                }
+                .maxByOrNull {
+                    it.jsonObject["bitrate"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
+                }?.jsonObject?.get("url")?.jsonPrimitive?.content
+            val hls = root["hlsUrl"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+            val dash = root["dashUrl"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }
+            if (progressive == null && audioUrl == null && hls == null && dash == null) {
+                error("Invidious returned no streams")
+            }
+            val thumbs = root["videoThumbnails"]?.jsonArray.orEmpty()
+            return ResolvedVideoStream(
+                videoId = videoId,
+                title = root["title"]?.jsonPrimitive?.content.orEmpty(),
+                uploaderName = root["author"]?.jsonPrimitive?.content.orEmpty(),
+                uploaderId = root["authorId"]?.jsonPrimitive?.content.orEmpty(),
+                uploaderAvatarUrl = "",
+                durationSeconds = root["lengthSeconds"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                viewCount = root["viewCount"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                likeCount = root["likeCount"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L,
+                dashManifestUrl = dash,
+                hlsUrl = hls,
+                videoStreamUrl = progressive,
+                audioOnlyStreamUrl = audioUrl.orEmpty(),
+                thumbnailUrl = thumbs.lastOrNull()?.jsonObject?.get("url")?.jsonPrimitive?.content.orEmpty()
             )
-            val info = SearchInfo.getInfo(service, handler)
-            info.relatedItems.filterIsInstance<StreamInfoItem>().map { item -> item.toFeedItem() }
         }
     }
+
+    // ------------------------------------------------------------------
+    // Search with types + pagination (v1.2)
+    // ------------------------------------------------------------------
+
+    @Volatile private var lastSearchHandler: SearchQueryHandler? = null
+    @Volatile private var lastSearchNextPage: Page? = null
+
+    private fun searchHandler(query: String, filter: SearchTypeFilter): SearchQueryHandler =
+        ServiceList.YouTube.searchQHFactory.fromQuery(query, listOf(filter.factoryValue), "")
+
+    private fun org.schabi.newpipe.extractor.InfoItem.toHit(): SearchHit? = when (this) {
+        is StreamInfoItem -> SearchHit(SearchHitType.VIDEO, video = toFeedItem())
+        is ChannelInfoItem -> SearchHit(
+            SearchHitType.CHANNEL,
+            channel = ChannelHit(
+                channelId = url.substringAfterLast("/"),
+                name = name,
+                avatarUrl = thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
+                subscriberCount = runCatching { subscriberCount }.getOrDefault(-1L),
+                description = runCatching { description }.getOrDefault(""),
+                url = url
+            )
+        )
+        is PlaylistInfoItem -> SearchHit(
+            SearchHitType.PLAYLIST,
+            playlist = PlaylistHit(
+                url = url,
+                title = name,
+                channelName = runCatching { uploaderName }.getOrDefault(""),
+                thumbnailUrl = thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
+                streamCount = runCatching { streamCount }.getOrDefault(0L)
+            )
+        )
+        else -> null
+    }
+
+    /** First page of a typed search. Remembers handler + next page for [searchMore]. */
+    suspend fun search(
+        query: String,
+        filter: SearchTypeFilter
+    ): Result<SearchPageResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val handler = searchHandler(query, filter)
+            val info = SearchInfo.getInfo(ServiceList.YouTube, handler)
+            lastSearchHandler = handler
+            lastSearchNextPage = if (info.hasNextPage()) info.nextPage else null
+            SearchPageResult(
+                hits = info.relatedItems.mapNotNull { it.toHit() },
+                hasMore = info.hasNextPage()
+            )
+        }
+    }
+
+    /** Next page of the most recent [search] call. */
+    suspend fun searchMore(): Result<SearchPageResult> = withContext(Dispatchers.IO) {
+        runCatching {
+            val handler = lastSearchHandler ?: error("No active search")
+            val page = lastSearchNextPage ?: return@runCatching SearchPageResult(emptyList(), false)
+            val more = SearchInfo.getMoreItems(ServiceList.YouTube, handler, page)
+            lastSearchNextPage = more.nextPage
+            SearchPageResult(
+                hits = more.items.mapNotNull { it.toHit() },
+                hasMore = more.nextPage != null
+            )
+        }
+    }
+
+    /** Channel-only search, used by fuzzy Add Channel and the Channels tab. */
+    suspend fun searchChannels(query: String): Result<List<ChannelHit>> =
+        search(query, SearchTypeFilter.CHANNELS).map { page ->
+            page.hits.mapNotNull { it.channel }
+        }
+
+    /** Legacy video-only search (first page), kept for existing callers. */
+    suspend fun searchVideos(query: String): Result<List<FeedItem>> =
+        search(query, SearchTypeFilter.VIDEOS).map { page ->
+            page.hits.mapNotNull { it.video }
+        }
 
     private fun StreamInfoItem.toFeedItem(): FeedItem = FeedItem(
         videoId = extractVideoId(url),
@@ -169,6 +437,7 @@ class StreamExtractorRepository(
         url = url,
         isShort = url.contains("/shorts/") ||
             runCatching { isShortFormContent }.getOrDefault(false),
+        likeCount = runCatching { likeCount }.getOrDefault(-1L),
         channelAvatarUrl = runCatching {
             uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
         }.getOrDefault(""),
@@ -188,21 +457,32 @@ class StreamExtractorRepository(
         }
     }
 
-    /** Channel page: name/avatar/subscribers + its videos. Best-effort. */
+    /** Channel page: name/avatar/subscribers + its videos (paginated, v1.2). Best-effort. */
     suspend fun fetchChannel(channelUrlOrId: String): Result<ChannelPayload> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val url = channelUrl(channelUrlOrId)
                 val info = org.schabi.newpipe.extractor.channel.ChannelInfo
                     .getInfo(ServiceList.YouTube, url)
-                // ChannelInfo carries no items in this extractor version;
-                // videos live in its tabs (first tab = Videos).
                 val videos = runCatching {
                     val tab = info.tabs.firstOrNull() ?: return@runCatching emptyList()
-                    org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+                    val tabInfo = org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
                         .getInfo(ServiceList.YouTube, tab)
-                        .relatedItems.filterIsInstance<StreamInfoItem>()
-                        .map { it.toFeedItem() }
+                    val items = tabInfo.relatedItems.filterIsInstance<StreamInfoItem>()
+                        .map { it.toFeedItem() }.toMutableList()
+                    var page = if (tabInfo.hasNextPage()) tabInfo.nextPage else null
+                    var pages = 0
+                    while (page != null && pages < 2) {
+                        val more = runCatching {
+                            org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+                                .getMoreItems(ServiceList.YouTube, tab, page)
+                        }.getOrNull() ?: break
+                        items += more.items.filterIsInstance<StreamInfoItem>()
+                            .map { it.toFeedItem() }
+                        page = more.nextPage
+                        pages++
+                    }
+                    com.puretube.app.domain.PageMerger.dedupe(items)
                 }.getOrDefault(emptyList())
                 ChannelPayload(
                     channelId = info.url.substringAfterLast("/"),
@@ -250,22 +530,52 @@ class StreamExtractorRepository(
             }
         }
 
-    /** Remote playlist contents for bookmarked playlists. Best-effort. */
-    suspend fun fetchRemotePlaylist(url: String): Result<RemotePlaylistPayload> =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val info = org.schabi.newpipe.extractor.playlist.PlaylistInfo
-                    .getInfo(ServiceList.YouTube, url)
-                RemotePlaylistPayload(
-                    url = url,
-                    title = info.name,
-                    channelName = runCatching { info.uploaderName }.getOrDefault(""),
-                    thumbnailUrl = info.thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
-                    videos = info.relatedItems.filterIsInstance<StreamInfoItem>()
-                        .map { it.toFeedItem() }
-                )
+    /**
+     * Remote playlist contents for bookmarked playlists (v1.2 rewrite).
+     * The URL is canonicalised to youtube.com/playlist?list=<id> first —
+     * passing a watch URL with a list parameter made the old extractor path
+     * return the playlist name with an empty first page. Pages are followed
+     * (up to [maxPages]) and results deduped. Extractor-collected errors are
+     * surfaced as a warning instead of being swallowed when the video list
+     * comes back empty.
+     */
+    suspend fun fetchRemotePlaylist(
+        url: String,
+        maxPages: Int = 10
+    ): Result<RemotePlaylistPayload> = withContext(Dispatchers.IO) {
+        runCatching {
+            val canonical = PlaylistUrl.canonical(url)
+            val info = PlaylistInfo.getInfo(ServiceList.YouTube, canonical)
+            val items = info.relatedItems.map { it.toFeedItem() }.toMutableList()
+            var page: Page? = if (info.hasNextPage()) info.nextPage else null
+            var fetched = 0
+            while (page != null && fetched < maxPages) {
+                val more = runCatching {
+                    PlaylistInfo.getMoreItems(ServiceList.YouTube, canonical, page)
+                }.getOrNull() ?: break
+                items += more.items.map { it.toFeedItem() }
+                page = more.nextPage
+                fetched++
             }
+            val videos = com.puretube.app.domain.PageMerger.dedupe(items)
+            val warning = when {
+                videos.isEmpty() && info.errors.isNotEmpty() ->
+                    "Extractor reported: " + info.errors.joinToString("; ") { ErrorText.describe(it, 160) }
+                videos.isEmpty() ->
+                    "The extractor returned no videos for this playlist. It may be private, a mix, or an unsupported link type."
+                else -> null
+            }
+            RemotePlaylistPayload(
+                url = canonical,
+                title = info.name,
+                channelName = runCatching { info.uploaderName }.getOrDefault(""),
+                thumbnailUrl = info.thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
+                videos = videos,
+                streamCount = runCatching { info.streamCount }.getOrDefault(videos.size.toLong()),
+                warning = warning
+            )
         }
+    }
 
     private fun parseHeight(resolution: String?): Int =
         resolution?.filter { it.isDigit() }?.toIntOrNull() ?: 0
@@ -286,5 +596,7 @@ data class RemotePlaylistPayload(
     val title: String,
     val channelName: String,
     val thumbnailUrl: String,
-    val videos: List<FeedItem>
+    val videos: List<FeedItem>,
+    val streamCount: Long = 0,
+    val warning: String? = null
 )
