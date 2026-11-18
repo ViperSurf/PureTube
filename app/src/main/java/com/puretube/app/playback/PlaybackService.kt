@@ -14,6 +14,8 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.puretube.app.MainActivity
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class PlaybackService : MediaSessionService() {
 
@@ -50,7 +52,7 @@ class PlaybackService : MediaSessionService() {
                     .setUsage(C.USAGE_MEDIA)
                     .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                     .build(),
-                true
+                mirrorRequireAudioFocus()
             )
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -59,6 +61,12 @@ class PlaybackService : MediaSessionService() {
         player.addListener(object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 loudnessController.onAudioSessionIdChanged(audioSessionId)
+            }
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                // Record for diagnostics; the UI layer owns the fallback chain.
+                _lastPlayerError.value =
+                    "${error.errorCodeName}: ${error.message ?: "playback error"}"
             }
         })
 
@@ -96,7 +104,35 @@ class PlaybackService : MediaSessionService() {
         monoProcessor.isMonoEnabled = enabled
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+    /** Re-applies the audio-focus preference to the live player. */
+    fun setRequireAudioFocus(enabled: Boolean) {
+        runCatching {
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(C.USAGE_MEDIA)
+                    .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                    .build(),
+                enabled
+            )
+        }
+    }
+
+    private fun mirrorPrefs() =
+        getSharedPreferences(MIRROR_PREFS, MODE_PRIVATE)
+
+    private fun mirrorRequireAudioFocus(): Boolean =
+        runCatching { mirrorPrefs().getBoolean(KEY_REQUIRE_AUDIO_FOCUS, true) }.getOrDefault(true)
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+        // Android Auto kill switch: refuse the car projection controller.
+        val disableAuto = runCatching {
+            mirrorPrefs().getBoolean(KEY_DISABLE_ANDROID_AUTO, true)
+        }.getOrDefault(true)
+        if (disableAuto && controllerInfo.packageName == ANDROID_AUTO_PACKAGE) {
+            return null
+        }
+        return mediaSession
+    }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!player.playWhenReady || player.mediaItemCount == 0) {
@@ -120,5 +156,15 @@ class PlaybackService : MediaSessionService() {
         @Volatile
         var instance: PlaybackService? = null
             private set
+
+        const val MIRROR_PREFS = "puretube_mirror"
+        const val KEY_REQUIRE_AUDIO_FOCUS = "require_audio_focus"
+        const val KEY_DISABLE_ANDROID_AUTO = "disable_android_auto"
+        const val KEY_APP_LANGUAGE = "app_language"
+        private const val ANDROID_AUTO_PACKAGE = "com.google.android.projection.gearhead"
+
+        private val _lastPlayerError = MutableStateFlow<String?>(null)
+        /** Most recent ExoPlayer error in the service, for diagnostics. */
+        val lastPlayerError: StateFlow<String?> = _lastPlayerError
     }
 }

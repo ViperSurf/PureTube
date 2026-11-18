@@ -12,7 +12,8 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import android.view.KeyEvent
-import androidx.activity.ComponentActivity
+import android.content.Context
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -69,7 +70,7 @@ import com.puretube.app.ui.theme.PureOledTheme
  * Native PiP params with Play/Pause, Mute, and +10s RemoteActions.
  * Auto-enter is enabled on Android 12+ when requested and playback is running.
  */
-fun ComponentActivity.buildAndEnterPipParams(
+fun FragmentActivity.buildAndEnterPipParams(
     isPlaying: Boolean,
     isMuted: Boolean,
     autoEnterEnabled: Boolean
@@ -128,7 +129,11 @@ fun ComponentActivity.buildAndEnterPipParams(
     return builder.build()
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleHelper.wrap(newBase))
+    }
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var mediaController by mutableStateOf<MediaController?>(null)
@@ -259,6 +264,13 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // Queue lives in PlayerController; clear it on exit when the
+        // resetQueueOnExit preference is on (this is the documented place:
+        // activity teardown, mirrored by the service releasing its player).
+        val app = application as? PureTubeApp
+        if (app != null && app.currentPrefs.resetQueueOnExit) {
+            app.playerController.clearQueue()
+        }
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null
         super.onDestroy()

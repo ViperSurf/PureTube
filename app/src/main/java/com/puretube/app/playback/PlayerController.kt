@@ -1,9 +1,17 @@
 package com.puretube.app.playback
 
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import com.puretube.app.data.remote.extractor.FeedItem
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 data class PlayerUiState(
     val isPlaying: Boolean = false,
@@ -14,14 +22,46 @@ data class PlayerUiState(
     val normalizationEnabled: Boolean = false,
     val currentPositionMs: Long = 0L,
     val durationMs: Long = 0L,
-    val title: String = ""
+    val title: String = "",
+    /** Last player error message, or null. Surfaced in-player, never thrown. */
+    val playerError: String? = null,
+    val sleepTimerMinutes: Int = 0,
+    val sleepTimerExpired: Boolean = false
 )
 
-/** StateFlow wrapper around the shared player: speed, audio-only, mono, normalization. */
+/**
+ * Pure queue helpers — unit-testable without a player.
+ */
+object QueueLogic {
+    /** Auto-queue candidates honour the short-only flag and the max-minutes cap. */
+    fun filterAutoQueueCandidates(
+        candidates: List<FeedItem>,
+        shortOnly: Boolean,
+        maxMinutes: Int
+    ): List<FeedItem> {
+        val maxSeconds = maxMinutes.coerceAtLeast(1) * 60L
+        return candidates.filter { item ->
+            if (item.durationSeconds <= 0) return@filter !shortOnly
+            if (shortOnly && item.durationSeconds > 90L) return@filter false
+            item.durationSeconds <= maxSeconds
+        }
+    }
+}
+
+/** StateFlow wrapper around the shared player: speed, audio-only, mono, normalization, queue, sleep timer. */
 class PlayerController {
 
     private val _state = MutableStateFlow(PlayerUiState())
     val state: StateFlow<PlayerUiState> = _state
+
+    private val _queue = MutableStateFlow<List<FeedItem>>(emptyList())
+    val queue: StateFlow<List<FeedItem>> = _queue
+
+    /** Invoked when playback reaches STATE_ENDED; the UI decides what plays next. */
+    @Volatile var onPlaybackEnded: (() -> Unit)? = null
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var sleepJob: Job? = null
 
     private var player: Player? = null
     private var previousVolume: Float = 1f
@@ -38,8 +78,23 @@ class PlayerController {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             _state.value = _state.value.copy(
                 title = mediaItem?.mediaMetadata?.title?.toString().orEmpty(),
-                durationMs = player?.duration?.coerceAtLeast(0) ?: 0L
+                durationMs = player?.duration?.coerceAtLeast(0) ?: 0L,
+                playerError = null
             )
+        }
+
+        override fun onPlayerError(error: PlaybackException) {
+            // Record, never rethrow: the player screen turns this into an
+            // in-player message with a fallback chain.
+            _state.value = _state.value.copy(
+                playerError = "${error.errorCodeName}: ${error.message ?: "playback error"}"
+            )
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED) {
+                runCatching { onPlaybackEnded?.invoke() }
+            }
         }
     }
 
@@ -61,14 +116,76 @@ class PlayerController {
 
     fun playMediaItem(item: MediaItem, startPositionMs: Long = 0L) {
         val p = player ?: return
-        p.setMediaItem(item, startPositionMs)
-        p.prepare()
-        p.playWhenReady = true
+        runCatching {
+            p.setMediaItem(item, startPositionMs)
+            p.prepare()
+            p.playWhenReady = true
+        }.onFailure { e ->
+            _state.value = _state.value.copy(playerError = "Could not start playback: ${e.message}")
+        }
+    }
+
+    fun clearError() {
+        _state.value = _state.value.copy(playerError = null)
+    }
+
+    // ---- Queue ----
+
+    fun enqueue(item: FeedItem) {
+        if (_queue.value.none { it.videoId == item.videoId }) {
+            _queue.value = _queue.value + item
+        }
+    }
+
+    fun enqueueAll(items: List<FeedItem>) {
+        val existing = _queue.value.map { it.videoId }.toSet()
+        _queue.value = _queue.value + items.filter { it.videoId !in existing }
+    }
+
+    fun removeFromQueue(videoId: String) {
+        _queue.value = _queue.value.filterNot { it.videoId == videoId }
+    }
+
+    /** Pops the head of the queue, or null when empty. */
+    fun popNextQueued(): FeedItem? {
+        val head = _queue.value.firstOrNull() ?: return null
+        _queue.value = _queue.value.drop(1)
+        return head
+    }
+
+    fun clearQueue() {
+        _queue.value = emptyList()
+    }
+
+    // ---- Sleep timer ----
+
+    /** minutes <= 0 cancels. On expiry playback pauses and a flag is raised. */
+    fun setSleepTimer(minutes: Int) {
+        sleepJob?.cancel()
+        sleepJob = null
+        if (minutes <= 0) {
+            _state.value = _state.value.copy(sleepTimerMinutes = 0, sleepTimerExpired = false)
+            return
+        }
+        _state.value = _state.value.copy(sleepTimerMinutes = minutes, sleepTimerExpired = false)
+        sleepJob = scope.launch {
+            delay(minutes * 60_000L)
+            runCatching { player?.pause() }
+            _state.value = _state.value.copy(sleepTimerMinutes = 0, sleepTimerExpired = true)
+        }
+    }
+
+    fun consumeSleepExpired() {
+        _state.value = _state.value.copy(sleepTimerExpired = false)
     }
 
     fun togglePlayPause() {
         val p = player ?: return
         if (p.isPlaying) p.pause() else p.play()
+    }
+
+    fun pause() {
+        runCatching { player?.pause() }
     }
 
     fun seekBy(deltaMs: Long) {
@@ -122,7 +239,20 @@ class PlayerController {
         _state.value = _state.value.copy(normalizationEnabled = enabled)
     }
 
+    /** Applies the requireAudioFocus preference to the live service player. */
+    fun setRequireAudioFocus(enabled: Boolean) {
+        PlaybackService.instance?.setRequireAudioFocus(enabled)
+    }
+
     fun currentPositionMs(): Long = player?.currentPosition ?: 0L
     fun durationMs(): Long = player?.duration?.coerceAtLeast(0) ?: 0L
     fun isPlaying(): Boolean = player?.isPlaying ?: false
+}
+
+/** Maps a sleep-timer choice label to minutes; pure and unit-tested. */
+object SleepTimerMapping {
+    val optionsMinutes: List<Int> = listOf(0, 5, 10, 15, 30, 45, 60)
+    fun labelFor(minutes: Int): String = if (minutes <= 0) "Off" else "$minutes min"
+    fun coerceDefault(minutes: Int): Int =
+        if (minutes in optionsMinutes) minutes else 15
 }

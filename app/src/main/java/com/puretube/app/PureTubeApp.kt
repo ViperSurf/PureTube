@@ -6,6 +6,7 @@ import coil3.SingletonImageLoader
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import com.puretube.app.data.backup.SubscriptionImportExportManager
 import com.puretube.app.data.local.AppDatabase
+import com.puretube.app.data.local.LastCrashStore
 import com.puretube.app.data.local.datastore.AppPreferences
 import com.puretube.app.data.local.datastore.AppPreferencesState
 import com.puretube.app.data.remote.dearrow.DeArrowRepository
@@ -55,6 +56,8 @@ class PureTubeApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Record uncaught exceptions for Settings > Diagnostics, then delegate.
+        LastCrashStore.install(this)
         database = AppDatabase.get(this)
         preferences = AppPreferences(this)
         okHttpClient = OkHttpClient.Builder()
