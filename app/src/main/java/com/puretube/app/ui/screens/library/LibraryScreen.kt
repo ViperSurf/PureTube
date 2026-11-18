@@ -46,7 +46,9 @@ import com.puretube.app.data.local.entity.LocalPlaylistEntity
 import com.puretube.app.data.local.entity.PlaylistVideoCrossRef
 import com.puretube.app.data.local.entity.PlaylistVisibility
 import com.puretube.app.data.remote.extractor.FeedItem
+import com.puretube.app.data.local.datastore.HistoryGroupMode
 import com.puretube.app.domain.HistoryBuckets
+import com.puretube.app.domain.HistoryDayGroups
 import com.puretube.app.ui.components.VideoCardItem
 import com.puretube.app.ui.theme.PureAccent
 import com.puretube.app.ui.theme.PureBorder
@@ -63,7 +65,8 @@ fun LibraryScreen(
     onVideoClick: (String) -> Unit,
     onChannelClick: (String) -> Unit = {},
     onLocalPlaylistClick: (Long) -> Unit = {},
-    onRemotePlaylistClick: (String) -> Unit = {}
+    onRemotePlaylistClick: (String) -> Unit = {},
+    onQueueClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as PureTubeApp
@@ -156,7 +159,8 @@ fun LibraryScreen(
 
     val now = System.currentTimeMillis()
     val visibleHistory = HistoryBuckets.visibleItems(history, now, prefs.historyVisibleDays)
-    val historyGroups = HistoryBuckets.group(visibleHistory, now)
+    val historyDayGroups = HistoryDayGroups.group(visibleHistory, now)
+    val queue by app.playerController.queue.collectAsState()
 
     LazyColumn(
         modifier = Modifier
@@ -363,10 +367,49 @@ fun LibraryScreen(
             }
         }
 
+        // ---- Queue ----
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, PureBorder, RoundedCornerShape(10.dp))
+                    .clickable { onQueueClick() }
+                    .padding(12.dp)
+            ) {
+                Text("Up Next queue", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                Spacer(modifier = Modifier.weight(1f))
+                Text("${queue.size} videos", color = PureTextSecondary, fontSize = 13.sp)
+            }
+        }
+
         // ---- History actions ----
         item {
             Column {
                 Text("History", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            app.preferences.update {
+                                it.copy(
+                                    historyGroupMode = if (prefs.historyGroupMode == HistoryGroupMode.GROUPED_BY_DAY) {
+                                        HistoryGroupMode.CONTINUOUS
+                                    } else {
+                                        HistoryGroupMode.GROUPED_BY_DAY
+                                    }
+                                )
+                            }
+                        }
+                    }) {
+                        Text(
+                            if (prefs.historyGroupMode == HistoryGroupMode.GROUPED_BY_DAY) {
+                                "Display: Grouped by day"
+                            } else {
+                                "Display: Continuous"
+                            },
+                            fontSize = 12.sp
+                        )
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = {
                         scope.launch { app.database.watchProgressDao().deleteCompleted() }
@@ -393,7 +436,26 @@ fun LibraryScreen(
                 Text("Watched videos will appear here with resume progress.", color = PureTextSecondary, fontSize = 13.sp)
             }
         }
-        historyGroups.forEach { (label, groupItems) ->
+        if (prefs.historyGroupMode == HistoryGroupMode.CONTINUOUS) {
+            items(visibleHistory, key = { "hist-${it.videoId}" }) { progress ->
+                VideoCardItem(
+                    item = FeedItem(
+                        videoId = progress.videoId,
+                        title = progress.title,
+                        channelName = progress.channelName,
+                        channelId = progress.channelId,
+                        thumbnailUrl = progress.thumbnailUrl,
+                        durationSeconds = if (progress.durationMs > 0) progress.durationMs / 1000 else 0L,
+                        url = "https://www.youtube.com/watch?v=${progress.videoId}"
+                    ),
+                    progressFraction = progress.progressFraction,
+                    onClick = { onVideoClick(progress.videoId) },
+                    onChannelClick = onChannelClick
+                )
+            }
+        }
+        historyDayGroups.takeIf { prefs.historyGroupMode == HistoryGroupMode.GROUPED_BY_DAY }
+            ?.forEach { (label, groupItems) ->
             item(key = "hist-$label") {
                 Text(label, color = PureAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }

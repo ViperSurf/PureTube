@@ -20,7 +20,13 @@ enum class BlurTargetGender { FEMALE_ONLY, MALE_ONLY, BOTH_ALL_PEOPLE }
 enum class ProtectedMediaType { IMAGES_ONLY, VIDEOS_ONLY, BOTH_IMAGES_AND_VIDEOS }
 enum class BlurVisualStyle { FROSTED_GAUSSIAN, PIXELATE_MOSAIC, SOLID_DIM_CURTAIN }
 enum class DefaultStartTab { SUBSCRIPTIONS, SEARCH, LIBRARY }
-enum class FeedLayout { LIST, GRID, THUMBNAIL_ONLY, TITLE_ONLY }
+enum class FeedLayout { LIST, GRID, THUMBNAIL_ONLY, TITLE_ONLY, BOTH }
+
+/** History display (v1.2): one section per calendar day, or one flat list. */
+enum class HistoryGroupMode { GROUPED_BY_DAY, CONTINUOUS }
+
+/** Feed thumbnail scale (v1.2). */
+enum class ThumbnailScale { COMPACT, NORMAL, LARGE }
 
 /** App language; SYSTEM follows the phone. Applies on restart. */
 enum class AppLanguage(val code: String) {
@@ -81,6 +87,8 @@ data class AppPreferencesState(
     val showUnwatchedOnlyInSubs: Boolean = false,
     val nightOledDimmerAlpha: Float = 0.0f,
     val feedLayout: FeedLayout = FeedLayout.LIST,
+    val feedThumbnailScale: ThumbnailScale = ThumbnailScale.NORMAL,
+    val gridColumns: Int = 2,
     val contentMinLikes: Int? = null,
     val contentMaxLikes: Int? = null,
     val commentMinLikes: Int? = null,
@@ -96,6 +104,7 @@ data class AppPreferencesState(
     val fallbackPipedApiUrl: String = "https://pipedapi.kavin.rocks",
     // Section 5: History, Queue & Library (v1.1)
     val watchHistoryEnabled: Boolean = true,
+    val historyGroupMode: HistoryGroupMode = HistoryGroupMode.GROUPED_BY_DAY,
     val searchHistoryEnabled: Boolean = true,
     val suggestionsEnabled: Boolean = false,
     val historyVisibleDays: Int = 0,
@@ -150,6 +159,9 @@ class AppPreferences(private val context: Context) {
         val showUnwatchedOnlyInSubs = booleanPreferencesKey("show_unwatched_only_in_subs")
         val nightOledDimmerAlpha = floatPreferencesKey("night_oled_dimmer_alpha")
         val feedLayout = stringPreferencesKey("feed_layout")
+        val feedThumbnailScale = stringPreferencesKey("feed_thumbnail_scale")
+        val gridColumns = intPreferencesKey("grid_columns")
+        val historyGroupMode = stringPreferencesKey("history_group_mode")
         val contentMinLikes = intPreferencesKey("content_min_likes")
         val contentMaxLikes = intPreferencesKey("content_max_likes")
         val commentMinLikes = intPreferencesKey("comment_min_likes")
@@ -221,6 +233,9 @@ class AppPreferences(private val context: Context) {
             showUnwatchedOnlyInSubs = this[Keys.showUnwatchedOnlyInSubs] ?: d.showUnwatchedOnlyInSubs,
             nightOledDimmerAlpha = this[Keys.nightOledDimmerAlpha] ?: d.nightOledDimmerAlpha,
             feedLayout = enumOr(Keys.feedLayout, FeedLayout.entries.toTypedArray(), d.feedLayout),
+            feedThumbnailScale = enumOr(Keys.feedThumbnailScale, ThumbnailScale.entries.toTypedArray(), d.feedThumbnailScale),
+            gridColumns = this[Keys.gridColumns] ?: d.gridColumns,
+            historyGroupMode = enumOr(Keys.historyGroupMode, HistoryGroupMode.entries.toTypedArray(), d.historyGroupMode),
             contentMinLikes = nullableInt(Keys.contentMinLikes),
             contentMaxLikes = nullableInt(Keys.contentMaxLikes),
             commentMinLikes = nullableInt(Keys.commentMinLikes),
@@ -284,6 +299,9 @@ class AppPreferences(private val context: Context) {
         this[Keys.showUnwatchedOnlyInSubs] = next.showUnwatchedOnlyInSubs
         this[Keys.nightOledDimmerAlpha] = next.nightOledDimmerAlpha
         this[Keys.feedLayout] = next.feedLayout.name
+        this[Keys.feedThumbnailScale] = next.feedThumbnailScale.name
+        this[Keys.gridColumns] = next.gridColumns
+        this[Keys.historyGroupMode] = next.historyGroupMode.name
         this[Keys.contentMinLikes] = next.contentMinLikes ?: -1
         this[Keys.contentMaxLikes] = next.contentMaxLikes ?: -1
         this[Keys.commentMinLikes] = next.commentMinLikes ?: -1

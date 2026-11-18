@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -49,6 +50,10 @@ import com.puretube.app.data.local.datastore.BlurVisualStyle
 import com.puretube.app.data.local.datastore.DefaultStartTab
 import com.puretube.app.data.local.datastore.ProtectedMediaType
 import com.puretube.app.data.local.datastore.ProtectionScope
+import com.puretube.app.data.local.datastore.AppPreferencesState
+import com.puretube.app.data.local.datastore.HistoryGroupMode
+import com.puretube.app.data.local.datastore.ThumbnailScale
+import com.puretube.app.domain.SectionResets
 import com.puretube.app.domain.SettingsJson
 import com.puretube.app.ui.components.SettingRowWithTooltip
 import com.puretube.app.ui.theme.PureTextSecondary
@@ -79,6 +84,7 @@ fun FlatSettingsScreen() {
     var query by remember { mutableStateOf("") }
     var crashText by remember { mutableStateOf(LastCrashStore.read(context) ?: "") }
     var dataStatus by remember { mutableStateOf("") }
+    var confirmResetAll by remember { mutableStateOf(false) }
     val subscriptionsForExport by app.database.subscriptionDao().observeAll()
         .collectAsState(initial = emptyList())
 
@@ -138,13 +144,13 @@ fun FlatSettingsScreen() {
     val expanded = remember {
         mutableStateOf(
             mapOf(
-                "1. HaramBlur Protection" to true,
-                "2. Playback, PiP & Audio" to true,
-                "3. Focus & Feed Filters" to true,
-                "4. SponsorBlock & Backup" to true,
-                "5. History, Queue & Data" to true,
-                "6. Language & Region" to true,
-                "7. Diagnostics & Data Actions" to true
+                "1. HaramBlur Protection" to false,
+                "2. Playback, PiP & Audio" to false,
+                "3. Focus & Feed Filters" to false,
+                "4. SponsorBlock & Backup" to false,
+                "5. History, Queue & Data" to false,
+                "6. Language & Region" to false,
+                "7. Diagnostics & Data Actions" to false
             )
         )
     }
@@ -173,6 +179,22 @@ fun FlatSettingsScreen() {
         val values = FeedLayout.entries
         val next = values[(prefs.feedLayout.ordinal + 1) % values.size]
         scope.launch { app.preferences.update { it.copy(feedLayout = next) } }
+    }
+    fun cycleThumbnailScale() {
+        val values = ThumbnailScale.entries
+        val next = values[(prefs.feedThumbnailScale.ordinal + 1) % values.size]
+        scope.launch { app.preferences.update { it.copy(feedThumbnailScale = next) } }
+    }
+    fun cycleGridColumns() {
+        val options = listOf(2, 3, 4)
+        val idx = options.indexOf(prefs.gridColumns).let { if (it < 0) 0 else it }
+        val next = options[(idx + 1) % options.size]
+        scope.launch { app.preferences.update { it.copy(gridColumns = next) } }
+    }
+    fun cycleHistoryGroupMode() {
+        val values = HistoryGroupMode.entries
+        val next = values[(prefs.historyGroupMode.ordinal + 1) % values.size]
+        scope.launch { app.preferences.update { it.copy(historyGroupMode = next) } }
     }
     fun cycleAppLanguage() {
         val values = AppLanguage.entries
@@ -574,13 +596,32 @@ fun FlatSettingsScreen() {
         SettingRowDef("6. Language & Region", "Preferred Audio Language",
             "When a video has several audio tracks, PureTube prefers this language. Original keeps the uploader's main track at the best quality.") {
             CycleButton(prefs.preferredAudioLanguage.name) { cycleAudioLanguage() }
+        },
+        SettingRowDef("3. Focus & Feed Filters", "Thumbnail Scale",
+            "How large video thumbnails and cards are in search and feeds: Compact, Normal, or Large.") {
+            CycleButton(prefs.feedThumbnailScale.name) { cycleThumbnailScale() }
+        },
+        SettingRowDef("3. Focus & Feed Filters", "Grid Columns",
+            "How many columns the Grid layout uses. More columns means smaller thumbnails.") {
+            CycleButton("${prefs.gridColumns} columns") { cycleGridColumns() }
+        },
+        SettingRowDef("5. History, Queue & Data", "History Display",
+            "Grouped by day shows one section per calendar day (Today, Yesterday, then each date). Continuous shows history as one flat newest-first list.") {
+            CycleButton(
+                if (prefs.historyGroupMode == HistoryGroupMode.GROUPED_BY_DAY) "Grouped by day" else "Continuous"
+            ) { cycleHistoryGroupMode() }
         }
     )
 
     val filtered = if (query.isBlank()) rows else rows.filter {
         it.title.contains(query, ignoreCase = true) || it.section.contains(query, ignoreCase = true)
     }
-    val sections = filtered.groupBy { it.section }
+    val sections = filtered.groupBy { it.section }.toSortedMap(
+        compareBy { section ->
+            val idx = SectionResets.sectionsInOrder.indexOf(section)
+            if (idx < 0) 99 else idx
+        }
+    )
 
     LazyColumn(
         modifier = Modifier
@@ -608,6 +649,44 @@ fun FlatSettingsScreen() {
                     lineHeight = 17.sp,
                     modifier = Modifier.padding(top = 8.dp)
                 )
+            }
+        }
+        sections.forEach { (section, sectionRows) ->
+            item(key = "header-$section") {
+                val isOpen = expanded.value[section] ?: false
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            expanded.value = expanded.value + (section to !isOpen)
+                        }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        section,
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(if (isOpen) "Hide" else "Show", color = PureTextSecondary, fontSize = 13.sp)
+                    androidx.compose.material3.TextButton(onClick = {
+                        scope.launch {
+                            app.preferences.update { SectionResets.reset(it, section) }
+                        }
+                        dataStatus = "Reset $section to defaults."
+                    }) { Text("Reset section", fontSize = 12.sp) }
+                }
+            }
+            if (expanded.value[section] ?: false) {
+                items(sectionRows.size, key = { idx -> "$section-${sectionRows[idx].title}" }) { idx ->
+                    val row = sectionRows[idx]
+                    SettingRowWithTooltip(
+                        title = row.title,
+                        tooltipExplanation = row.tooltip
+                    ) { row.content() }
+                }
             }
         }
         item(key = "diagnostics-block") {
@@ -681,42 +760,33 @@ fun FlatSettingsScreen() {
                         dataStatus = "All playback positions deleted."
                     }) { Text("Delete all playback positions", fontSize = 12.sp) }
                 }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { confirmResetAll = true }) {
+                        Text("Reset all settings", fontSize = 12.sp)
+                    }
+                }
                 if (dataStatus.isNotBlank()) {
                     Text(dataStatus, color = PureTextSecondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
                 }
             }
         }
-        sections.forEach { (section, sectionRows) ->
-            item(key = "header-$section") {
-                val isOpen = expanded.value[section] ?: true
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            expanded.value = expanded.value + (section to !isOpen)
-                        }
-                        .padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        section,
-                        color = Color.White,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(if (isOpen) "Hide" else "Show", color = PureTextSecondary, fontSize = 13.sp)
-                }
+    }
+
+    if (confirmResetAll) {
+        AlertDialog(
+            onDismissRequest = { confirmResetAll = false },
+            title = { Text("Reset all settings?") },
+            text = { Text("Every PureTube setting returns to its default. Subscriptions, playlists and history are not touched.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    confirmResetAll = false
+                    scope.launch { app.preferences.replaceAll(AppPreferencesState()) }
+                    dataStatus = "All settings reset to defaults."
+                }) { Text("Reset") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmResetAll = false }) { Text("Cancel") }
             }
-            if (expanded.value[section] ?: true) {
-                items(sectionRows.size, key = { idx -> "$section-${sectionRows[idx].title}" }) { idx ->
-                    val row = sectionRows[idx]
-                    SettingRowWithTooltip(
-                        title = row.title,
-                        tooltipExplanation = row.tooltip
-                    ) { row.content() }
-                }
-            }
-        }
+        )
     }
 }

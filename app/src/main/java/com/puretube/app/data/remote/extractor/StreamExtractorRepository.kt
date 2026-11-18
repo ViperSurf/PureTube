@@ -437,7 +437,7 @@ class StreamExtractorRepository(
         url = url,
         isShort = url.contains("/shorts/") ||
             runCatching { isShortFormContent }.getOrDefault(false),
-        likeCount = runCatching { likeCount }.getOrDefault(-1L),
+        // Extractor 0.27 no longer exposes a per-item like count; -1 = unknown.
         channelAvatarUrl = runCatching {
             uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
         }.getOrDefault(""),
