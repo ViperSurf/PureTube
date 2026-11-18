@@ -9,7 +9,12 @@ data class FeedItem(
     val thumbnailUrl: String,
     val durationSeconds: Long,
     val url: String,
-    val isShort: Boolean = false
+    val isShort: Boolean = false,
+    /** -1 when the source does not report a like count. */
+    val likeCount: Long = -1L,
+    val channelAvatarUrl: String = "",
+    /** Epoch ms of upload when known (feed merge ordering); 0 = unknown. */
+    val uploadEpochMs: Long = 0L
 )
 
 /**
@@ -29,12 +34,17 @@ object ShortsFilterEngine {
     fun filterByBlockedKeywords(
         items: List<FeedItem>,
         blockedKeywords: List<String>,
-        blockedChannelIds: List<String>
+        blockedChannelIds: List<String>,
+        blockedChannelNames: List<String> = emptyList()
     ): List<FeedItem> {
         val keywords = blockedKeywords.map { it.lowercase() }.filter { it.isNotBlank() }
+        val names = blockedChannelNames.map { it.lowercase() }.filter { it.isNotBlank() }
         return items.filter { item ->
             val title = item.title.lowercase()
-            keywords.none { title.contains(it) } && item.channelId !in blockedChannelIds
+            val channel = item.channelName.lowercase()
+            keywords.none { title.contains(it) } &&
+                item.channelId !in blockedChannelIds &&
+                names.none { channel.contains(it) }
         }
     }
 }

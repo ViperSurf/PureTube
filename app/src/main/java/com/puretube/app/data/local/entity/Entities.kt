@@ -35,11 +35,14 @@ data class WatchProgressEntity(
     }
 }
 
+enum class PlaylistVisibility { PUBLIC, UNLISTED, PRIVATE }
+
 @Entity(tableName = "local_playlists")
 data class LocalPlaylistEntity(
     @PrimaryKey(autoGenerate = true) val playlistId: Long = 0,
     val name: String,
-    val createdAtEpochMs: Long
+    val createdAtEpochMs: Long,
+    val visibility: PlaylistVisibility = PlaylistVisibility.PRIVATE
 )
 
 @Entity(
@@ -57,6 +60,22 @@ data class PlaylistVideoCrossRef(
     val positionIndex: Int
 )
 
+/** A remote (YouTube) playlist the user saved a bookmark to. */
+@Entity(tableName = "bookmarked_playlists")
+data class BookmarkedPlaylistEntity(
+    @PrimaryKey val url: String,
+    val title: String,
+    val channelName: String,
+    val thumbnailUrl: String,
+    val savedAtEpochMs: Long
+)
+
+@Entity(tableName = "search_history", indices = [Index(value = ["searchedAtEpochMs"])])
+data class SearchHistoryEntity(
+    @PrimaryKey val query: String,
+    val searchedAtEpochMs: Long
+)
+
 @Entity(tableName = "blocked_filters", indices = [Index(value = ["pattern", "filterType"], unique = true)])
 data class BlockedFilterEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -64,4 +83,7 @@ data class BlockedFilterEntity(
     val filterType: FilterType
 )
 
-enum class FilterType { KEYWORD, CHANNEL_ID }
+enum class FilterType {
+    KEYWORD, CHANNEL_ID, CHANNEL_NAME,
+    COMMENT_KEYWORD, COMMENT_USERNAME, COMMENT_CHANNEL_ID
+}

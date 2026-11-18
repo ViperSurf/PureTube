@@ -12,6 +12,7 @@ import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.search.SearchInfo
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import com.puretube.app.domain.CommentItem
 
 data class ResolvedVideoStream(
     val videoId: String,
@@ -60,16 +61,25 @@ class StreamExtractorRepository(
     suspend fun extractStreamWithFailover(
         rawUrlOrId: String,
         preferredMaxHeight: Int,
-        preferAv1Vp9: Boolean
+        preferAv1Vp9: Boolean,
+        preferredAudioLanguageCode: String? = null
     ): Result<ResolvedVideoStream> = withContext(Dispatchers.IO) {
         val canonicalUrl = normalizeAndStripShortsUrl(rawUrlOrId)
         val videoId = extractVideoId(rawUrlOrId)
 
         val primaryAttempt = runCatching {
             val info = StreamInfo.getInfo(ServiceList.YouTube, canonicalUrl)
-            val bestAudio = info.audioStreams
-                .maxByOrNull { it.averageBitrate }
-                ?.content ?: error("No audio stream found")
+            val bestAudio = runCatching {
+                val matching = preferredAudioLanguageCode?.let { code ->
+                    info.audioStreams.filter {
+                        runCatching { it.audioLocale?.language == code }.getOrDefault(false)
+                    }
+                }.orEmpty()
+                (matching.maxByOrNull { it.averageBitrate }
+                    ?: info.audioStreams.maxByOrNull { it.averageBitrate })
+                    ?.content
+            }.getOrNull() ?: info.audioStreams.maxByOrNull { it.averageBitrate }?.content
+                ?: error("No audio stream found")
 
             val bestVideo = info.videoOnlyStreams
                 .filter { parseHeight(it.resolution) <= preferredMaxHeight || preferredMaxHeight <= 0 }
@@ -145,21 +155,128 @@ class StreamExtractorRepository(
                 ""
             )
             val info = SearchInfo.getInfo(service, handler)
-            info.relatedItems.filterIsInstance<StreamInfoItem>().map { item ->
-                FeedItem(
-                    videoId = extractVideoId(item.url),
-                    title = item.name,
-                    channelName = item.uploaderName,
-                    channelId = item.uploaderUrl?.substringAfterLast("/").orEmpty(),
-                    thumbnailUrl = item.thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
-                    durationSeconds = item.duration,
-                    url = item.url,
-                    isShort = item.url.contains("/shorts/")
+            info.relatedItems.filterIsInstance<StreamInfoItem>().map { item -> item.toFeedItem() }
+        }
+    }
+
+    private fun StreamInfoItem.toFeedItem(): FeedItem = FeedItem(
+        videoId = extractVideoId(url),
+        title = name,
+        channelName = uploaderName,
+        channelId = uploaderUrl?.substringAfterLast("/") ?: "",
+        thumbnailUrl = thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
+        durationSeconds = duration,
+        url = url,
+        isShort = url.contains("/shorts/") ||
+            runCatching { isShortFormContent }.getOrDefault(false),
+        channelAvatarUrl = runCatching {
+            uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
+        }.getOrDefault(""),
+        uploadEpochMs = runCatching {
+            uploadDate?.offsetDateTime()?.toInstant()?.toEpochMilli() ?: 0L
+        }.getOrDefault(0L)
+    )
+
+    /** Best-effort content-country localization for the extractor. */
+    fun configureContentCountry(countryCode: String?) {
+        runCatching {
+            if (countryCode.isNullOrBlank() || countryCode == "SYSTEM") return
+            org.schabi.newpipe.extractor.NewPipe.setupLocalization(
+                org.schabi.newpipe.extractor.localization.Localization("en", countryCode),
+                org.schabi.newpipe.extractor.localization.ContentCountry(countryCode)
+            )
+        }
+    }
+
+    /** Channel page: name/avatar/subscribers + its videos. Best-effort. */
+    suspend fun fetchChannel(channelUrlOrId: String): Result<ChannelPayload> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val url = channelUrl(channelUrlOrId)
+                val info = org.schabi.newpipe.extractor.channel.ChannelInfo
+                    .getInfo(ServiceList.YouTube, url)
+                ChannelPayload(
+                    channelId = info.url.substringAfterLast("/"),
+                    channelName = info.name,
+                    avatarUrl = info.avatars.maxByOrNull { it.height }?.url.orEmpty(),
+                    subscriberCount = runCatching { info.subscriberCount }.getOrDefault(-1L),
+                    videos = info.relatedItems.filterIsInstance<StreamInfoItem>()
+                        .map { it.toFeedItem() }
                 )
             }
         }
+
+    /** Resolves a channel URL / @handle / bare ID into a channel URL. */
+    fun channelUrl(input: String): String {
+        val trimmed = input.trim()
+        return when {
+            trimmed.startsWith("http") -> trimmed
+            trimmed.startsWith("@") -> "https://www.youtube.com/$trimmed"
+            trimmed.startsWith("UC") -> "https://www.youtube.com/channel/$trimmed"
+            else -> "https://www.youtube.com/channel/$trimmed"
+        }
     }
+
+    /** Comments for a video. Best-effort; empty when disabled/unavailable. */
+    suspend fun fetchComments(videoId: String): Result<List<CommentItem>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val url = normalizeAndStripShortsUrl(videoId)
+                val info = org.schabi.newpipe.extractor.comments.CommentsInfo
+                    .getInfo(ServiceList.YouTube, url)
+                if (info.isCommentsDisabled) return@runCatching emptyList()
+                info.relatedItems.map { item ->
+                    CommentItem(
+                        id = runCatching { item.commentId }.getOrDefault(""),
+                        authorName = runCatching { item.uploaderName }.getOrDefault(""),
+                        authorChannelId = runCatching {
+                            item.uploaderUrl?.substringAfterLast("/") ?: ""
+                        }.getOrDefault(""),
+                        text = runCatching { item.commentText.content }.getOrDefault(""),
+                        likeCount = runCatching { item.likeCount }.getOrDefault(-1),
+                        avatarUrl = runCatching {
+                            item.uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
+                        }.getOrDefault("")
+                    )
+                }
+            }
+        }
+
+    /** Remote playlist contents for bookmarked playlists. Best-effort. */
+    suspend fun fetchRemotePlaylist(url: String): Result<RemotePlaylistPayload> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val info = org.schabi.newpipe.extractor.playlist.PlaylistInfo
+                    .getInfo(ServiceList.YouTube, url)
+                RemotePlaylistPayload(
+                    url = url,
+                    title = info.name,
+                    channelName = runCatching { info.uploaderName }.getOrDefault(""),
+                    thumbnailUrl = info.thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
+                    videos = info.relatedItems.filterIsInstance<StreamInfoItem>()
+                        .map { it.toFeedItem() }
+                )
+            }
+        }
 
     private fun parseHeight(resolution: String?): Int =
         resolution?.filter { it.isDigit() }?.toIntOrNull() ?: 0
 }
+
+/** Channel screen payload. */
+data class ChannelPayload(
+    val channelId: String,
+    val channelName: String,
+    val avatarUrl: String,
+    val subscriberCount: Long,
+    val videos: List<FeedItem>
+)
+
+/** Bookmarked (remote) playlist payload. */
+data class RemotePlaylistPayload(
+    val url: String,
+    val title: String,
+    val channelName: String,
+    val thumbnailUrl: String,
+    val videos: List<FeedItem>
+)
