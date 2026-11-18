@@ -31,16 +31,21 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -58,12 +63,14 @@ import com.puretube.app.haramblur.system.SystemBlurOverlayService
 import com.puretube.app.playback.PlaybackService
 import com.puretube.app.playback.PipActionReceiver
 import com.puretube.app.playback.PocketVolumeSkipDetector
+import com.puretube.app.ui.components.FloatingMiniWindow
 import com.puretube.app.ui.components.MiniPlayerDock
 import com.puretube.app.ui.screens.channel.ChannelScreen
 import com.puretube.app.ui.screens.library.LibraryScreen
 import com.puretube.app.ui.screens.playlist.LocalPlaylistScreen
 import com.puretube.app.ui.screens.playlist.RemotePlaylistScreen
 import com.puretube.app.ui.screens.player.VideoPlayerScreen
+import com.puretube.app.ui.screens.queue.QueueScreen
 import com.puretube.app.ui.screens.search.SearchScreen
 import com.puretube.app.ui.screens.settings.FlatSettingsScreen
 import com.puretube.app.ui.screens.subscriptions.SubscriptionsScreen
@@ -302,7 +309,24 @@ private fun PureTubeNav(
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
     val playerState by app.playerController.state.collectAsState()
+    val queueItems by app.playerController.queue.collectAsState()
+    val notice by app.playerController.notice.collectAsState()
     val prefs by app.preferences.state.collectAsState(initial = app.currentPrefs)
+    var floatingOpen by remember { mutableStateOf(false) }
+    var dockProgress by remember { mutableFloatStateOf(0f) }
+
+    LaunchedEffect(controller, currentRoute) {
+        while (true) {
+            if (controller != null && currentRoute?.startsWith("player") != true) {
+                val duration = runCatching { controller.duration }.getOrDefault(0L)
+                val position = runCatching { controller.currentPosition }.getOrDefault(0L)
+                dockProgress = if (duration > 0) {
+                    (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                } else 0f
+            }
+            kotlinx.coroutines.delay(700)
+        }
+    }
 
     LaunchedEffect(pendingVideoId) {
         val videoId = pendingVideoId ?: return@LaunchedEffect
@@ -321,6 +345,11 @@ private fun PureTubeNav(
                         MiniPlayerDock(
                             state = playerState,
                             onTogglePlayPause = { app.playerController.togglePlayPause() },
+                            onToggleMute = { app.playerController.toggleMute() },
+                            queueCount = queueItems.size,
+                            progressFraction = dockProgress,
+                            onQueueClick = { navController.navigate("queue") },
+                            onFloatClick = { floatingOpen = true },
                             onOpenPlayer = {
                                 val videoId = controller?.currentMediaItem?.mediaId
                                 if (!videoId.isNullOrBlank()) {
@@ -328,6 +357,7 @@ private fun PureTubeNav(
                                 }
                             },
                             onClose = {
+                                floatingOpen = false
                                 controller?.stop()
                                 controller?.clearMediaItems()
                             }
@@ -403,6 +433,9 @@ private fun PureTubeNav(
                         onVideoClick = { videoId -> navController.navigate("player/$videoId") },
                         onChannelClick = { channelId ->
                             navController.navigate("channel/${android.net.Uri.encode(channelId)}")
+                        },
+                        onPlaylistClick = { url ->
+                            navController.navigate("remotePlaylist/${android.net.Uri.encode(url)}")
                         }
                     )
                 }
@@ -417,7 +450,14 @@ private fun PureTubeNav(
                         },
                         onRemotePlaylistClick = { url ->
                             navController.navigate("remotePlaylist/${android.net.Uri.encode(url)}")
-                        }
+                        },
+                        onQueueClick = { navController.navigate("queue") }
+                    )
+                }
+                composable("queue") {
+                    QueueScreen(
+                        onVideoClick = { videoId -> navController.navigate("player/$videoId") },
+                        onBack = { navController.popBackStack() }
                     )
                 }
                 composable(
@@ -468,12 +508,48 @@ private fun PureTubeNav(
                         videoId = videoId,
                         controller = controller,
                         onBack = { navController.popBackStack() },
+                        onMinimize = {
+                            floatingOpen = true
+                            navController.popBackStack()
+                        },
+                        onQueueClick = { navController.navigate("queue") },
                         onVideoClick = { nextId -> navController.navigate("player/$nextId") },
                         onChannelClick = { channelId ->
                             navController.navigate("channel/${android.net.Uri.encode(channelId)}")
                         }
                     )
                 }
+            }
+            notice?.let { text ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 10.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF1E1E1E))
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text(text, color = Color.White, fontSize = 13.sp)
+                }
+            }
+            if (floatingOpen && currentRoute?.startsWith("player") != true) {
+                FloatingMiniWindow(
+                    controller = controller,
+                    state = playerState,
+                    onTogglePlayPause = { app.playerController.togglePlayPause() },
+                    onExpand = {
+                        floatingOpen = false
+                        val videoId = controller?.currentMediaItem?.mediaId
+                        if (!videoId.isNullOrBlank()) {
+                            navController.navigate("player/$videoId") { launchSingleTop = true }
+                        }
+                    },
+                    onClose = {
+                        floatingOpen = false
+                        controller?.stop()
+                        controller?.clearMediaItems()
+                    }
+                )
             }
             if (prefs.nightOledDimmerAlpha > 0f) {
                 Box(

@@ -90,7 +90,9 @@ fun VideoPlayerScreen(
     controller: MediaController?,
     onBack: () -> Unit,
     onVideoClick: (String) -> Unit = {},
-    onChannelClick: (String) -> Unit = {}
+    onChannelClick: (String) -> Unit = {},
+    onMinimize: () -> Unit = onBack,
+    onQueueClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as PureTubeApp
@@ -545,8 +547,18 @@ fun VideoPlayerScreen(
                 app.playerController.setAudioOnly(next)
                 scope.launch { app.preferences.update { it.copy(audioOnlyMode = next) } }
             }) { Text(if (playerState.audioOnly) "Audio Only: ON" else "Audio Only", fontSize = 12.sp) }
-            Button(onClick = { app.playerController.toggleMute() }) {
-                Text(if (playerState.isMuted) "Unmute" else "Mute", fontSize = 12.sp)
+            Button(
+                onClick = { app.playerController.toggleMute() },
+                colors = if (playerState.isMuted) {
+                    androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFB3261E),
+                        contentColor = Color.White
+                    )
+                } else {
+                    androidx.compose.material3.ButtonDefaults.buttonColors()
+                }
+            ) {
+                Text(if (playerState.isMuted) "Muted" else "Mute", fontSize = 12.sp)
             }
             Button(onClick = {
                 if (showSpeedSlider) showSpeedSlider = false else app.playerController.cycleSpeed()
@@ -608,6 +620,7 @@ fun VideoPlayerScreen(
                 },
                 modifier = Modifier.height(36.dp)
             )
+            TextButton(onClick = onMinimize) { Text("Minimize ⌄", fontSize = 12.sp) }
             TextButton(onClick = onBack) { Text("Back", fontSize = 12.sp) }
         }
         if (sleepEndedNote) {
@@ -636,6 +649,19 @@ fun VideoPlayerScreen(
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             if (status.isNotBlank()) {
                 Text(status, color = PureTextSecondary, fontSize = 14.sp, lineHeight = 20.sp)
+            }
+            if (queue.isNotEmpty()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Up next: ${queue.first().title}",
+                        color = PureTextSecondary, fontSize = 13.sp,
+                        maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onQueueClick) {
+                        Text("Queue (${queue.size})", fontSize = 12.sp)
+                    }
+                }
             }
             fatalError?.let { error ->
                 Text(error, color = Color(0xFFFF8080), fontSize = 14.sp, lineHeight = 20.sp)
@@ -722,9 +748,9 @@ fun VideoPlayerScreen(
                         }
                     }) { Text("Watch Later", fontSize = 12.sp) }
                     Button(onClick = {
-                        app.playerController.enqueue(feedItem)
+                        app.playerController.enqueueWithNotice(feedItem)
                         actionStatus = "Added to queue"
-                    }) { Text("Queue", fontSize = 12.sp) }
+                    }) { Text("Queue (${queue.size})", fontSize = 12.sp) }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TextButton(onClick = { showPlaylistDialog = true }) {

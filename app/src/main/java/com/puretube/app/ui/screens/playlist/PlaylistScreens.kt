@@ -250,8 +250,8 @@ fun RemotePlaylistScreen(
                     (if (loaded.streamCount > loaded.videos.size) " of ${loaded.streamCount}" else ""),
                 color = PureTextSecondary, fontSize = 13.sp
             )
-            if (loaded.warning.isNotBlank()) {
-                Text(loaded.warning, color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp)
+            loaded.warning?.takeIf { it.isNotBlank() }?.let { warning ->
+                Text(warning, color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp)
             }
             if (loaded.videos.isEmpty()) {
                 Text(

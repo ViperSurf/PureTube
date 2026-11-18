@@ -227,7 +227,7 @@ fun SubscriptionsScreen(
                                     }
                             }
                             when (com.puretube.app.domain.ChannelInput.classify(input)) {
-                                com.puretube.app.domain.ChannelInputKind.NAME -> {
+                                com.puretube.app.domain.ChannelInput.Kind.NAME -> {
                                     // Fuzzy: a bare name is a channel SEARCH, never a URL.
                                     app.streamRepository.searchChannels(input)
                                         .onSuccess { results ->
@@ -245,7 +245,9 @@ fun SubscriptionsScreen(
                                             addStatus = "Channel search failed: ${com.puretube.app.domain.ErrorText.describe(e, 300)}"
                                         }
                                 }
-                                else -> addByUrl(com.puretube.app.domain.ChannelInput.toUrl(input))
+                                else -> com.puretube.app.domain.ChannelInput.toUrl(input)
+                                    ?.let { addByUrl(it) }
+                                    ?: run { addStatus = "Could not interpret that input." }
                             }
                         }
                     }) { Text("Add") }
