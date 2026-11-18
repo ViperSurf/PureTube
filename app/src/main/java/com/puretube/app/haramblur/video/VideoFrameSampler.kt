@@ -163,12 +163,14 @@ class VideoFrameSampler(
                         surfaceView,
                         buffer,
                         { copyResult ->
-                            continuation.tryResume(copyResult == PixelCopy.SUCCESS) {}
+                            if (continuation.isActive) {
+                                continuation.resume(copyResult == PixelCopy.SUCCESS)
+                            }
                         },
                         handler
                     )
                 } catch (e: Exception) {
-                    continuation.tryResume(false) {}
+                    if (continuation.isActive) continuation.resume(false)
                 }
             }
         }.getOrDefault(false)

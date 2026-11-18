@@ -195,13 +195,21 @@ class StreamExtractorRepository(
                 val url = channelUrl(channelUrlOrId)
                 val info = org.schabi.newpipe.extractor.channel.ChannelInfo
                     .getInfo(ServiceList.YouTube, url)
+                // ChannelInfo carries no items in this extractor version;
+                // videos live in its tabs (first tab = Videos).
+                val videos = runCatching {
+                    val tab = info.tabs.firstOrNull() ?: return@runCatching emptyList()
+                    org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
+                        .getInfo(ServiceList.YouTube, tab)
+                        .relatedItems.filterIsInstance<StreamInfoItem>()
+                        .map { it.toFeedItem() }
+                }.getOrDefault(emptyList())
                 ChannelPayload(
                     channelId = info.url.substringAfterLast("/"),
                     channelName = info.name,
                     avatarUrl = info.avatars.maxByOrNull { it.height }?.url.orEmpty(),
                     subscriberCount = runCatching { info.subscriberCount }.getOrDefault(-1L),
-                    videos = info.relatedItems.filterIsInstance<StreamInfoItem>()
-                        .map { it.toFeedItem() }
+                    videos = videos
                 )
             }
         }
