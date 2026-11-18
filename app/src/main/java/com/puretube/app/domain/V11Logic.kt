@@ -119,8 +119,10 @@ object SponsorRewindSuppression {
     ): Set<String> {
         if (!pauseSkipOnRewind) return emptySet()
         if (seekToMs >= seekFromMs) return emptySet() // only rewinds count
+        // A rewind that lands before the end of an already-skipped segment
+        // (before it or inside it) means the user wants to watch it this time.
         val hit = segments.filter { (uuid, range) ->
-            uuid in skippedUuids && seekToMs < range.last && seekToMs <= range.first + 1_000L
+            uuid in skippedUuids && seekFromMs > range.first && seekToMs < range.last
         }.map { it.first }
         return hit.toSet()
     }
