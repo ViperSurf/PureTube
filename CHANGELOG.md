@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.2.0 — 2026-11-18
+
+Field-test fix release: playback failover, search, queue visibility, imports.
+
+### Playback: extraction failover (the v1.1.0 "Failover HTTP 403")
+- NewPipeExtractor upgraded v0.24.4 -> v0.27.1 (the old pin predates current YouTube-side changes).
+- Extraction is now a logged multi-stage failover: NewPipe primary, NewPipe retry, the user's configured Piped instance, several built-in Piped instances, then several built-in Invidious instances. Any stage that yields a playable progressive/HLS URL plays. Nothing throws silently: the player error and Copy Diagnostics show the resolved title, which stage supplied the streams, and a one-line result per stage (class + message, no more blank causes).
+
+### Saved playlists by link
+- Playlist URLs are canonicalised (watch+list links become real playlist URLs) and contents are fetched across all pages and deduplicated. The playlist screen shows the video count, surfaces load warnings/errors in-screen, and Play All / Queue All confirm with the video count.
+
+### Search
+- Type filter chips: All / Videos / Playlists / Channels, with per-type results (playlist results open/bookmark the playlist, channel results open the channel page, type badges on mixed results).
+- Pagination: results keep loading past the first ~20 — auto-load near the bottom plus a Load more button, deduplicated, with a growing "N results +" count. Channel videos paginate too.
+- Recent searches: the last 20 searches appear on the empty search screen (when search history is on), tap to re-run, remove one, or clear all.
+- Scale & layout: thumbnail scale (Compact / Normal / Large), layouts List / Grid / Both (thumbnail+title) / Thumbnail only / Title only, and a 2/3/4 grid-columns selector — quick controls on the Search screen, honoured by Search, Subscriptions, Library, Channel, and Playlist screens.
+- Search state now lives outside the screen: opening a video and coming back keeps the query, results, filter, and scroll position.
+
+### Player & queue
+- Mute button turns RED while muted (player and mini dock).
+- The queue is visible: a Queue screen (order, now-playing highlight, tap-to-play, remove, up/down reorder, clear all, empty-state help) reachable from the player ("Up next: …" + Queue (N)), the mini dock badge, and the Library. Adding to the queue shows an in-app "Added to queue (N)" notice.
+- Minimize: the player's Minimize button (and the dock's float button) opens a draggable floating mini window (16:9, ~1/3 screen width) over any screen — same player, surface moved, not duplicated — with play/pause, close, and tap-to-expand. Back from the player keeps playback going in the mini dock, which now shows live progress and a red mute toggle.
+
+### Settings
+- All sections start closed; sections render in their numbered order 1-7 with Diagnostics last (it previously rendered at the top).
+- "Reset all settings" (with confirmation) plus a per-section reset button on every section.
+- New preferences: thumbnail scale, grid columns, history display mode.
+
+### Library
+- History display toggle: grouped per day (Today, Yesterday, then one section per day) or one continuous list; the visible-days window works in both modes.
+
+### Imports & channel add
+- Subscription import is structure-tolerant and content-sniffed: NewPipe JSON, Google Takeout (CSV, JSON, OPML), SkyTube JSON, Morphe-style JSON, generic OPML, generic CSV (synonym headers, any order), and plain-text URL/handle lists. It reports "imported N (format), skipped M unrecognised rows" instead of failing the file.
+- Add Channel is fuzzy: a bare name (e.g. "ssundee") runs a channel search — one match is added with a status naming it, several matches show a tap-to-add picker. Channel IDs, @handles, and URLs still resolve directly, and errors show the full cause instead of a blank message.
+
+
 ## v1.1.0 — 2026-11-18
 
 Crash fix release plus a full feature pass.

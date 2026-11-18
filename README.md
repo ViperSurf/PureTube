@@ -107,7 +107,7 @@ CI (GitHub Actions) runs the unit tests and then builds the release APK on every
 ## Build notes
 
 - On-device vision uses `org.tensorflow:tensorflow-lite` + `tensorflow-lite-gpu` (2.17.0) behind the `HaramBlurEngine` interface.
-- NewPipeExtractor is resolved from JitPack: `com.github.TeamNewPipe:NewPipeExtractor:v0.24.4`.
+- NewPipeExtractor is resolved from JitPack: `com.github.TeamNewPipe:NewPipeExtractor:v0.27.1`.
 - Room is 2.6.1 with KSP; Coil is 3.0.4 (`coil-compose` + `coil-network-okhttp`).
 
 ## Architecture
