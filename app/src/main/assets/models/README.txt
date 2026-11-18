@@ -1,0 +1,1 @@
+Model files are not bundled. Place blaze_face_short_range.tflite and gender_attr_classifier_int8.tflite in this folder (assets/models) before building to enable on-device detection. Without them the HaramBlur engine stays inactive and the app runs normally.
