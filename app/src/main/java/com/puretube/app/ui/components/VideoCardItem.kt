@@ -230,7 +230,7 @@ fun VideoCardItem(
                             text = { Text("Add to Queue") },
                             onClick = {
                                 menuOpen = false
-                                app.playerController.enqueue(item)
+                                app.playerController.enqueueWithNotice(item)
                                 menuStatus = "Added to queue"
                             }
                         )

@@ -138,6 +138,10 @@ fun ChannelScreen(
                 FeedListStandalone(
                     items = videos,
                     layout = prefs.feedLayout,
+                scale = prefs.feedThumbnailScale,
+                columns = prefs.gridColumns,
+                    scale = prefs.feedThumbnailScale,
+                    columns = prefs.gridColumns,
                     onVideoClick = onVideoClick,
                     modifier = Modifier.fillMaxSize()
                 )

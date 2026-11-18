@@ -23,6 +23,8 @@ data class PlayerUiState(
     val currentPositionMs: Long = 0L,
     val durationMs: Long = 0L,
     val title: String = "",
+    /** Media id of the current item (queue highlighting, v1.2). */
+    val currentVideoId: String = "",
     /** Last player error message, or null. Surfaced in-player, never thrown. */
     val playerError: String? = null,
     val sleepTimerMinutes: Int = 0,
@@ -57,6 +59,20 @@ class PlayerController {
     private val _queue = MutableStateFlow<List<FeedItem>>(emptyList())
     val queue: StateFlow<List<FeedItem>> = _queue
 
+    /** Transient in-app notice (e.g. "Added to queue (3)"), auto-dismissed. */
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice
+    private var noticeJob: Job? = null
+
+    fun postNotice(message: String) {
+        noticeJob?.cancel()
+        _notice.value = message
+        noticeJob = scope.launch {
+            delay(2600L)
+            _notice.value = null
+        }
+    }
+
     /** Invoked when playback reaches STATE_ENDED; the UI decides what plays next. */
     @Volatile var onPlaybackEnded: (() -> Unit)? = null
 
@@ -78,6 +94,7 @@ class PlayerController {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             _state.value = _state.value.copy(
                 title = mediaItem?.mediaMetadata?.title?.toString().orEmpty(),
+                currentVideoId = mediaItem?.mediaId.orEmpty(),
                 durationMs = player?.duration?.coerceAtLeast(0) ?: 0L,
                 playerError = null
             )
@@ -155,6 +172,24 @@ class PlayerController {
 
     fun clearQueue() {
         _queue.value = emptyList()
+    }
+
+    /** Moves a queued item one step up (-1) or down (+1). No-op at the edges. */
+    fun moveInQueue(videoId: String, delta: Int) {
+        val list = _queue.value.toMutableList()
+        val idx = list.indexOfFirst { it.videoId == videoId }
+        if (idx < 0) return
+        val target = idx + delta
+        if (target !in list.indices) return
+        val item = list.removeAt(idx)
+        list.add(target, item)
+        _queue.value = list
+    }
+
+    /** Enqueues and posts the standard "Added to queue (N)" notice. */
+    fun enqueueWithNotice(item: FeedItem) {
+        enqueue(item)
+        postNotice("Added to queue (${_queue.value.size})")
     }
 
     // ---- Sleep timer ----

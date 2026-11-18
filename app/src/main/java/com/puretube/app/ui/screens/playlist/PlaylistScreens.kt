@@ -219,7 +219,7 @@ fun RemotePlaylistScreen(
     LaunchedEffect(playlistUrl) {
         app.streamRepository.fetchRemotePlaylist(playlistUrl)
             .onSuccess { payload = it; status = "" }
-            .onFailure { e -> status = "Could not load this playlist: ${e.message ?: "load failed"}" }
+            .onFailure { e -> status = "Could not load this playlist: ${com.puretube.app.domain.ErrorText.describe(e, 400)}" }
     }
 
     Column(
@@ -245,18 +245,42 @@ fun RemotePlaylistScreen(
             Text(status, color = PureTextSecondary, fontSize = 14.sp, lineHeight = 20.sp)
         }
         payload?.let { loaded ->
+            Text(
+                "${loaded.videos.size} videos" +
+                    (if (loaded.streamCount > loaded.videos.size) " of ${loaded.streamCount}" else ""),
+                color = PureTextSecondary, fontSize = 13.sp
+            )
+            if (loaded.warning.isNotBlank()) {
+                Text(loaded.warning, color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp)
+            }
+            if (loaded.videos.isEmpty()) {
+                Text(
+                    "This playlist loaded but returned no videos.",
+                    color = PureTextSecondary, fontSize = 14.sp
+                )
+            }
             Row {
                 TextButton(onClick = {
-                    loaded.videos.drop(1).forEach { app.playerController.enqueue(it) }
-                    loaded.videos.firstOrNull()?.let { onVideoClick(it.videoId) }
+                    if (loaded.videos.isEmpty()) {
+                        app.playerController.postNotice("No videos to play yet")
+                    } else {
+                        loaded.videos.drop(1).forEach { app.playerController.enqueue(it) }
+                        app.playerController.postNotice("Playing playlist (${loaded.videos.size} videos)")
+                        loaded.videos.firstOrNull()?.let { onVideoClick(it.videoId) }
+                    }
                 }) { Text("Play all", fontSize = 13.sp) }
                 TextButton(onClick = {
                     loaded.videos.forEach { app.playerController.enqueue(it) }
+                    if (loaded.videos.isNotEmpty()) {
+                        app.playerController.postNotice("Queued ${loaded.videos.size} videos")
+                    }
                 }) { Text("Queue all", fontSize = 13.sp) }
             }
             FeedListStandalone(
                 items = loaded.videos,
                 layout = prefs.feedLayout,
+                scale = prefs.feedThumbnailScale,
+                columns = prefs.gridColumns,
                 onVideoClick = onVideoClick,
                 onChannelClick = onChannelClick,
                 modifier = Modifier.fillMaxSize()

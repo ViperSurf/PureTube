@@ -123,12 +123,17 @@ fun FlatSettingsScreen() {
         if (uri != null) {
             val text = readUriText(uri)
             scope.launch {
-                val parsed = text?.let {
-                    runCatching { app.importExportManager.parseAny(it) }.getOrDefault(emptyList())
-                }.orEmpty()
+                val report = text?.let {
+                    runCatching { app.importExportManager.parseAnyWithReport(it) }.getOrNull()
+                }
+                val parsed = report?.subscriptions.orEmpty()
                 if (parsed.isNotEmpty()) app.database.subscriptionDao().upsertAll(parsed)
-                dataStatus = if (parsed.isEmpty()) "No subscriptions found in that file."
-                else "Imported ${parsed.size} subscriptions from file."
+                dataStatus = when {
+                    report == null || parsed.isEmpty() -> "No subscriptions found in that file."
+                    report.skipped > 0 ->
+                        "Imported ${parsed.size} subscriptions (${report.format}), skipped ${report.skipped} unrecognised rows."
+                    else -> "Imported ${parsed.size} subscriptions (${report.format}) from file."
+                }
             }
         }
     }

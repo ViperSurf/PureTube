@@ -2,6 +2,7 @@ package com.puretube.app.ui.screens.subscriptions
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -28,7 +30,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -72,6 +76,7 @@ fun SubscriptionsScreen(
     var feedCache by remember { mutableStateOf<Map<String, List<FeedItem>>>(emptyMap()) }
     var addChannelText by remember { mutableStateOf("") }
     var addStatus by remember { mutableStateOf("") }
+    var channelMatches by remember { mutableStateOf<List<com.puretube.app.data.remote.extractor.ChannelHit>>(emptyList()) }
 
     suspend fun loadFeed(force: Boolean) {
         if (subscriptions.isEmpty()) {
@@ -191,7 +196,7 @@ fun SubscriptionsScreen(
                     OutlinedTextField(
                         value = addChannelText,
                         onValueChange = { addChannelText = it },
-                        placeholder = { Text("Channel URL, @handle, or ID") },
+                        placeholder = { Text("Channel name, @handle, URL, or ID") },
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )
@@ -200,28 +205,95 @@ fun SubscriptionsScreen(
                         if (input.isBlank()) return@Button
                         scope.launch {
                             addStatus = "Resolving…"
-                            app.streamRepository.fetchChannel(input)
-                                .onSuccess { payload ->
-                                    app.database.subscriptionDao().upsert(
-                                        SubscriptionEntity(
-                                            channelId = payload.channelId,
-                                            channelName = payload.channelName,
-                                            avatarUrl = payload.avatarUrl,
-                                            subscriberCountText = null,
-                                            addedAtEpochMs = System.currentTimeMillis()
+                            channelMatches = emptyList()
+                            suspend fun addByUrl(url: String) {
+                                app.streamRepository.fetchChannel(url)
+                                    .onSuccess { payload ->
+                                        app.database.subscriptionDao().upsert(
+                                            SubscriptionEntity(
+                                                channelId = payload.channelId,
+                                                channelName = payload.channelName,
+                                                avatarUrl = payload.avatarUrl,
+                                                subscriberCountText = null,
+                                                addedAtEpochMs = System.currentTimeMillis()
+                                            )
                                         )
-                                    )
-                                    addChannelText = ""
-                                    addStatus = "Added ${payload.channelName}"
+                                        addChannelText = ""
+                                        channelMatches = emptyList()
+                                        addStatus = "Added ${payload.channelName}"
+                                    }
+                                    .onFailure { e ->
+                                        addStatus = "Could not resolve that channel: ${com.puretube.app.domain.ErrorText.describe(e, 300)}"
+                                    }
+                            }
+                            when (com.puretube.app.domain.ChannelInput.classify(input)) {
+                                com.puretube.app.domain.ChannelInputKind.NAME -> {
+                                    // Fuzzy: a bare name is a channel SEARCH, never a URL.
+                                    app.streamRepository.searchChannels(input)
+                                        .onSuccess { results ->
+                                            when {
+                                                results.isEmpty() ->
+                                                    addStatus = "No channel found matching \"$input\". Try the @handle or channel URL."
+                                                results.size == 1 -> addByUrl(results.first().url)
+                                                else -> {
+                                                    channelMatches = results
+                                                    addStatus = "Several channels match \"$input\" — tap one to add it:"
+                                                }
+                                            }
+                                        }
+                                        .onFailure { e ->
+                                            addStatus = "Channel search failed: ${com.puretube.app.domain.ErrorText.describe(e, 300)}"
+                                        }
                                 }
-                                .onFailure { e ->
-                                    addStatus = "Could not resolve that channel: ${e.message ?: "failed"}"
-                                }
+                                else -> addByUrl(com.puretube.app.domain.ChannelInput.toUrl(input))
+                            }
                         }
                     }) { Text("Add") }
                 }
                 if (addStatus.isNotBlank()) {
                     Text(addStatus, color = PureTextSecondary, fontSize = 13.sp)
+                }
+                channelMatches.forEach { match ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                scope.launch {
+                                    addStatus = "Adding ${match.name}…"
+                                    app.streamRepository.fetchChannel(match.url)
+                                        .onSuccess { payload ->
+                                            app.database.subscriptionDao().upsert(
+                                                SubscriptionEntity(
+                                                    channelId = payload.channelId,
+                                                    channelName = payload.channelName,
+                                                    avatarUrl = payload.avatarUrl,
+                                                    subscriberCountText = null,
+                                                    addedAtEpochMs = System.currentTimeMillis()
+                                                )
+                                            )
+                                            addChannelText = ""
+                                            channelMatches = emptyList()
+                                            addStatus = "Added ${payload.channelName}"
+                                        }
+                                        .onFailure { e ->
+                                            addStatus = "Could not add that channel: ${com.puretube.app.domain.ErrorText.describe(e, 300)}"
+                                        }
+                                }
+                            }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        coil3.compose.AsyncImage(
+                            model = match.avatarUrl, contentDescription = match.name,
+                            modifier = Modifier.size(36.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                        )
+                        Column(modifier = Modifier.padding(start = 10.dp)) {
+                            Text(match.name, color = Color.White, fontSize = 14.sp)
+                            if (match.subscriberCount >= 0) {
+                                Text("${match.subscriberCount} subscribers", color = PureTextSecondary, fontSize = 12.sp)
+                            }
+                        }
+                    }
                 }
                 if (subscriptions.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
@@ -269,12 +341,25 @@ fun SubscriptionsScreen(
         }
         items(feedItems, key = { it.videoId }) { item ->
             val progress = history.firstOrNull { it.videoId == item.videoId }
-            VideoCardItem(
-                item = item,
-                progressFraction = progress?.progressFraction ?: 0f,
-                onClick = { onVideoClick(item.videoId) },
-                onChannelClick = onChannelClick
-            )
+            when (prefs.feedLayout) {
+                com.puretube.app.data.local.datastore.FeedLayout.BOTH,
+                com.puretube.app.data.local.datastore.FeedLayout.GRID,
+                com.puretube.app.data.local.datastore.FeedLayout.THUMBNAIL_ONLY ->
+                    com.puretube.app.ui.components.BothRow(
+                        item = item, scale = prefs.feedThumbnailScale,
+                        onClick = { onVideoClick(item.videoId) }, onChannelClick = onChannelClick
+                    )
+                com.puretube.app.data.local.datastore.FeedLayout.TITLE_ONLY ->
+                    com.puretube.app.ui.components.TitleRow(
+                        item = item, onClick = { onVideoClick(item.videoId) }
+                    )
+                else -> VideoCardItem(
+                    item = item,
+                    progressFraction = progress?.progressFraction ?: 0f,
+                    onClick = { onVideoClick(item.videoId) },
+                    onChannelClick = onChannelClick
+                )
+            }
         }
     }
 }

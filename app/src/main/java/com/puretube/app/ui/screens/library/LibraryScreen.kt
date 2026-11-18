@@ -103,13 +103,17 @@ fun LibraryScreen(
         if (uri != null) {
             val text = readFile(uri)
             scope.launch {
-                val parsed = text?.let {
-                    runCatching { app.importExportManager.parseAny(it) }.getOrDefault(emptyList())
-                }.orEmpty()
+                val report = text?.let {
+                    runCatching { app.importExportManager.parseAnyWithReport(it) }.getOrNull()
+                }
+                val parsed = report?.subscriptions.orEmpty()
                 if (parsed.isNotEmpty()) app.database.subscriptionDao().upsertAll(parsed)
-                fileStatus = if (parsed.isEmpty()) {
-                    "No subscriptions found in that file."
-                } else "Imported ${parsed.size} subscriptions from file."
+                fileStatus = when {
+                    report == null || parsed.isEmpty() -> "No subscriptions found in that file."
+                    report.skipped > 0 ->
+                        "Imported ${parsed.size} subscriptions (${report.format}), skipped ${report.skipped} unrecognised rows."
+                    else -> "Imported ${parsed.size} subscriptions (${report.format}) from file."
+                }
             }
         }
     }
@@ -349,19 +353,24 @@ fun LibraryScreen(
                 OutlinedTextField(
                     value = importText,
                     onValueChange = { importText = it },
-                    placeholder = { Text("Or paste NewPipe JSON / Takeout CSV") },
+                    placeholder = { Text("Or paste a subscription export (NewPipe, Takeout, SkyTube, OPML, CSV…)") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
                     maxLines = 5
                 )
                 TextButton(onClick = {
-                    val parsed = runCatching { app.importExportManager.parseAny(importText) }
-                        .getOrDefault(emptyList())
+                    val report = runCatching { app.importExportManager.parseAnyWithReport(importText) }
+                        .getOrNull()
+                    val parsed = report?.subscriptions.orEmpty()
                     scope.launch {
                         if (parsed.isNotEmpty()) app.database.subscriptionDao().upsertAll(parsed)
-                        fileStatus = if (parsed.isEmpty()) {
-                            "Nothing imported — the pasted text did not match a supported format."
-                        } else "Imported ${parsed.size} subscriptions from paste."
+                        fileStatus = when {
+                            report == null || parsed.isEmpty() ->
+                                "Nothing imported — the pasted text did not match a supported format."
+                            report.skipped > 0 ->
+                                "Imported ${parsed.size} subscriptions (${report.format}), skipped ${report.skipped} unrecognised rows."
+                            else -> "Imported ${parsed.size} subscriptions (${report.format}) from paste."
+                        }
                     }
                 }) { Text("Import pasted subscriptions", fontSize = 12.sp) }
             }
@@ -438,18 +447,10 @@ fun LibraryScreen(
         }
         if (prefs.historyGroupMode == HistoryGroupMode.CONTINUOUS) {
             items(visibleHistory, key = { "hist-${it.videoId}" }) { progress ->
-                VideoCardItem(
-                    item = FeedItem(
-                        videoId = progress.videoId,
-                        title = progress.title,
-                        channelName = progress.channelName,
-                        channelId = progress.channelId,
-                        thumbnailUrl = progress.thumbnailUrl,
-                        durationSeconds = if (progress.durationMs > 0) progress.durationMs / 1000 else 0L,
-                        url = "https://www.youtube.com/watch?v=${progress.videoId}"
-                    ),
-                    progressFraction = progress.progressFraction,
-                    onClick = { onVideoClick(progress.videoId) },
+                HistoryRow(
+                    progress = progress,
+                    prefs = prefs,
+                    onVideoClick = onVideoClick,
                     onChannelClick = onChannelClick
                 )
             }
@@ -460,18 +461,10 @@ fun LibraryScreen(
                 Text(label, color = PureAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             }
             items(groupItems, key = { "hist-${it.videoId}" }) { progress ->
-                VideoCardItem(
-                    item = FeedItem(
-                        videoId = progress.videoId,
-                        title = progress.title,
-                        channelName = progress.channelName,
-                        channelId = progress.channelId,
-                        thumbnailUrl = progress.thumbnailUrl,
-                        durationSeconds = if (progress.durationMs > 0) progress.durationMs / 1000 else 0L,
-                        url = "https://www.youtube.com/watch?v=${progress.videoId}"
-                    ),
-                    progressFraction = progress.progressFraction,
-                    onClick = { onVideoClick(progress.videoId) },
+                HistoryRow(
+                    progress = progress,
+                    prefs = prefs,
+                    onVideoClick = onVideoClick,
                     onChannelClick = onChannelClick
                 )
             }
@@ -490,6 +483,42 @@ fun LibraryScreen(
                 }) { Text("Clear") }
             },
             dismissButton = { TextButton(onClick = { confirmClearSubs = false }) { Text("Cancel") } }
+        )
+    }
+}
+
+/** History row honouring the shared feed layout + scale prefs (v1.2). */
+@Composable
+private fun HistoryRow(
+    progress: com.puretube.app.data.local.entity.WatchProgressEntity,
+    prefs: com.puretube.app.data.local.datastore.AppPreferencesState,
+    onVideoClick: (String) -> Unit,
+    onChannelClick: (String) -> Unit
+) {
+    val item = FeedItem(
+        videoId = progress.videoId,
+        title = progress.title,
+        channelName = progress.channelName,
+        channelId = progress.channelId,
+        thumbnailUrl = progress.thumbnailUrl,
+        durationSeconds = if (progress.durationMs > 0) progress.durationMs / 1000 else 0L,
+        url = "https://www.youtube.com/watch?v=${progress.videoId}"
+    )
+    when (prefs.feedLayout) {
+        com.puretube.app.data.local.datastore.FeedLayout.BOTH ->
+            com.puretube.app.ui.components.BothRow(
+                item = item, scale = prefs.feedThumbnailScale,
+                onClick = { onVideoClick(progress.videoId) }, onChannelClick = onChannelClick
+            )
+        com.puretube.app.data.local.datastore.FeedLayout.TITLE_ONLY ->
+            com.puretube.app.ui.components.TitleRow(
+                item = item, onClick = { onVideoClick(progress.videoId) }
+            )
+        else -> VideoCardItem(
+            item = item,
+            progressFraction = progress.progressFraction,
+            onClick = { onVideoClick(progress.videoId) },
+            onChannelClick = onChannelClick
         )
     }
 }

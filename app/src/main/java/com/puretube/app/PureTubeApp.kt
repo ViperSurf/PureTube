@@ -49,6 +49,9 @@ class PureTubeApp : Application() {
         private set
     val playerController = PlayerController()
 
+    /** Search state that survives navigation (v1.2). */
+    val searchSession = com.puretube.app.ui.screens.search.SearchSession()
+
     /** Latest preferences snapshot for synchronous readers (image pipeline, sampler). */
     @Volatile
     var currentPrefs: AppPreferencesState = AppPreferencesState()
