@@ -3,7 +3,7 @@
 Air-gapped Android YouTube client with the dual-layer, on-device **HaramBlur** protection engine. Pure OLED interface, no Shorts, SponsorBlock, background play, and 1-tap audio-only play.
 
 - Package: `com.puretube.app`
-- Version: 1.0.0 (versionCode 1)
+- Version: 1.1.0 (versionCode 2)
 - minSdk 26 · target/compileSdk 35
 - Kotlin · Jetpack Compose · Media3 (ExoPlayer) · Room · DataStore · Coil 3 · NewPipeExtractor
 
@@ -29,6 +29,24 @@ Air-gapped Android YouTube client with the dual-layer, on-device **HaramBlur** p
 - **Subscriptions home** with an "Unwatched only" pill (a video counts as watched at 92%), local keyword/channel blocklist filters, and offline import/export (NewPipe JSON and YouTube Takeout CSV, parsed entirely on-device).
 - **Library:** history with resume progress bars, local playlists, and subscription import/export.
 - **SponsorBlock** auto-skip (sponsor, self-promo, intro, outro, interaction) with a non-blocking "Skipped Sponsor • Undo" pill; **DeArrow** neutral titles/thumbnails; **Return YouTube Dislike** counts.
+
+### What's new in v1.1
+
+- **Crash-hardened player:** the player opens even when extraction fails, the media service connects late, models are absent, or a stream URL errors — failures become in-player messages with an automatic fallback chain (adaptive -> progressive -> audio-only) and a Copy diagnostics button. Uncaught crashes are recorded on-device and viewable under Settings > Diagnostics.
+- **Queue & autoplay:** every video card and the player have a configure menu (Watch Later, Add to Queue, Mark Watched/Unwatched, Add to Playlist, Subscribe/Unsubscribe, Block channel by name or ID). When a video ends, the queue plays next; with an empty queue, autoplay can pick a same-channel video that fits the short-only / max-minutes rules.
+- **Sleep timer:** Off, 5, 10, 15, 30, 45, 60 minutes from the player, with a preselectable default; expiry pauses playback and shows "Sleep timer ended".
+- **Channel pages:** tap a channel name or avatar anywhere to open its page (Subscribe toggle + its videos).
+- **Subscriptions feed:** the All chip aggregates all channels newest-first with a per-channel refresh threshold (Refresh bypasses it), per-channel chips filter, and channels can be added manually by URL, @handle, or ID.
+- **Library:** bookmarked playlists, playlists with Public/Unlisted/Private visibility (detail screen with play, rename, visibility, delete, export, and share for non-private lists), Watch Later, and history grouped Today / Yesterday / This week / This month / Older with a visible-days window.
+- **File import/export first:** subscriptions (JSON/CSV), playlists (JSON/CSV/TXT of links), and settings (JSON) move through the system file picker; paste/clipboard remains as a secondary route.
+- **Filters:** comment blocking by keyword, username, and channel ID; like-count ranges for videos and comments; four feed layouts (List, Grid, Thumbnail only, Title only) shared by Search, Subscriptions, Library, Channel, and Playlist screens.
+- **SponsorBlock refinements:** the skip pill can be silenced, and rewinding into an already-skipped segment stops it being skipped again for that video.
+- **Playback defaults:** audio focus is required by default (other apps pause PureTube and vice versa), and Android Auto is disabled by default — PureTube refuses the car-projection controller. Both are changeable in Settings.
+- **Diagnostics:** Settings shows the last recorded crash (if any) with Copy and Clear, plus import/export and clear-data actions.
+
+### Roadmap
+
+- Account sign-in is **not** included yet — PureTube still works fully without any account, and no sign-in or token code ships in this release. If it arrives later it will be optional and off by default.
 
 ### Playback
 
@@ -70,7 +88,7 @@ Model files are **not** bundled in this repository. Drop them into `assets/model
 
 ## Install
 
-1. Download `PureTube-v1.0.0.apk` from the GitHub Release and open it on your phone (allow "install from this app" for your browser/Files when Android asks).
+1. Download `PureTube-v1.1.0.apk` from the GitHub Release and open it on your phone (allow "install from this app" for your browser/Files when Android asks).
 2. Or download the APK artifact from the latest CI run on `main`.
 
 Builds are signed with the project's stable dev keystore committed in `keystore/`, so new builds install over the top of old ones without a signature-mismatch uninstall.
