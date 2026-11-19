@@ -176,10 +176,6 @@ fun LibraryScreen(
         item {
             Text("Library", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
-        item {
-            com.puretube.app.ui.components.FeedDisplayControls()
-        }
-
         // ---- Bookmarked playlists ----
         item {
             Column(
@@ -428,6 +424,7 @@ fun LibraryScreen(
                         )
                     }
                 }
+                com.puretube.app.ui.components.HistoryDisplayControls()
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = {
                         scope.launch { app.database.watchProgressDao().deleteCompleted() }
@@ -496,7 +493,12 @@ fun LibraryScreen(
     }
 }
 
-/** History row honouring the shared feed layout + scale prefs (v1.2). */
+/**
+ * History row honouring HISTORY's own layout + scale prefs (v2.1 —
+ * previously it shared the feed prefs, so History showed full-size
+ * cards). List and Both both render compact thumbnail+title rows at
+ * the history scale (Compact by default); Title only renders text.
+ */
 @Composable
 private fun HistoryRow(
     progress: com.puretube.app.data.local.entity.WatchProgressEntity,
@@ -513,21 +515,15 @@ private fun HistoryRow(
         durationSeconds = if (progress.durationMs > 0) progress.durationMs / 1000 else 0L,
         url = "https://www.youtube.com/watch?v=${progress.videoId}"
     )
-    when (prefs.feedLayout) {
-        com.puretube.app.data.local.datastore.FeedLayout.BOTH ->
-            com.puretube.app.ui.components.BothRow(
-                item = item, scale = prefs.feedThumbnailScale,
-                onClick = { onVideoClick(progress.videoId) }, onChannelClick = onChannelClick
-            )
+    when (prefs.historyLayout) {
         com.puretube.app.data.local.datastore.FeedLayout.TITLE_ONLY ->
             com.puretube.app.ui.components.TitleRow(
                 item = item, onClick = { onVideoClick(progress.videoId) }
             )
-        else -> VideoCardItem(
-            item = item,
-            progressFraction = progress.progressFraction,
-            onClick = { onVideoClick(progress.videoId) },
-            onChannelClick = onChannelClick
-        )
+        else ->
+            com.puretube.app.ui.components.BothRow(
+                item = item, scale = prefs.historyThumbnailScale,
+                onClick = { onVideoClick(progress.videoId) }, onChannelClick = onChannelClick
+            )
     }
 }

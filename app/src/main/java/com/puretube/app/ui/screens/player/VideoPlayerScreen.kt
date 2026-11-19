@@ -15,6 +15,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.ui.input.pointer.changedToUpOrCanceled
 import androidx.compose.ui.input.pointer.positionChanged
 import kotlinx.coroutines.withTimeoutOrNull
@@ -1267,7 +1269,8 @@ fun VideoPlayerScreen(
                     },
                     modifier = Modifier.height(36.dp)
                 )
-                TextButton(onClick = onBack) { Text("Back", fontSize = 12.sp) }
+                // v2.1: no Back button here — it duplicated Minimize.
+                // Minimize (above) + the system back gesture are the exits.
             }
         }
     }
@@ -1455,11 +1458,42 @@ fun VideoPlayerScreen(
                     channelAvatarUrl = stream.uploaderAvatarUrl
                 )
                 Text(
-                    text = "${stream.uploaderName} - ${stream.viewCount} views",
+                    text = stream.uploaderName,
                     color = PureAccent,
                     fontSize = 13.sp,
                     modifier = Modifier.padding(top = 4.dp)
                 )
+                // v2.1 video info line: upload date (absolute + relative),
+                // compact view count, and like/dislike counts honouring
+                // the Numbers/Percentage/Both preference.
+                val infoParts = buildList {
+                    com.puretube.app.domain.VideoInfoFormat.dateLine(
+                        stream.uploadDateEpochMs, stream.uploadDateText,
+                        System.currentTimeMillis()
+                    )?.let { add(it) }
+                    if (stream.viewCount > 0) {
+                        add(
+                            "${com.puretube.app.domain.VideoInfoFormat.compactCount(stream.viewCount)} views"
+                        )
+                    }
+                    val likes = dislikeStats?.likes?.takeIf { it >= 0 } ?: stream.likeCount
+                    val dislikes = dislikeStats?.dislikes?.takeIf { it >= 0 } ?: -1L
+                    if (likes > 0 || dislikes >= 0) {
+                        add(
+                            com.puretube.app.domain.LikesDisplayMath.format(
+                                likes, dislikes, prefs.likesDisplay
+                            )
+                        )
+                    }
+                }
+                if (infoParts.isNotEmpty()) {
+                    Text(
+                        text = infoParts.joinToString(" · "),
+                        color = PureTextSecondary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
                 TextButton(onClick = { onChannelClick(stream.uploaderId) }) {
                     Text("Open channel: ${stream.uploaderName}", fontSize = 13.sp)
                 }
@@ -1616,6 +1650,25 @@ fun VideoPlayerScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TextButton(onClick = { showPlaylistDialog = true }) {
                         Text("Add to Playlist…", fontSize = 12.sp)
+                    }
+                    TextButton(onClick = {
+                        // v2.1: Android share sheet with the watch URL + title.
+                        runCatching {
+                            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(
+                                    Intent.EXTRA_TEXT,
+                                    "${stream.title}\nhttps://www.youtube.com/watch?v=${stream.videoId}"
+                                )
+                                putExtra(Intent.EXTRA_SUBJECT, stream.title)
+                            }
+                            context.startActivity(
+                                Intent.createChooser(shareIntent, "Share video")
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }) {
+                        Text("Share", fontSize = 12.sp)
                     }
                     TextButton(onClick = {
                         scope.launch {
@@ -1928,28 +1981,45 @@ fun VideoPlayerScreen(
         ) {
             videoBox()
             if (controlsVisible) {
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(start = 16.dp, top = 12.dp, end = 16.dp)
-                ) {
-                    Text(
-                        text = displayTitle.ifBlank { resolved?.title ?: "" },
-                        color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold,
-                        maxLines = 2,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                    )
-                    resolved?.let { stream ->
+                // v2.1: the fullscreen title honours "Show title in
+                // fullscreen" (default ON) and every fullscreen overlay
+                // is padded with the display-cutout / safe-drawing
+                // insets so nothing hugs a curved edge or a punch-hole
+                // camera (the seek time labels were getting cut).
+                if (prefs.showTitleInFullscreen) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .windowInsetsPadding(
+                                androidx.compose.foundation.layout.WindowInsets.safeDrawing
+                            )
+                            .padding(start = 16.dp, top = 12.dp, end = 16.dp)
+                    ) {
                         Text(
-                            text = stream.uploaderName,
-                            color = PureAccent, fontSize = 12.sp
+                            text = displayTitle.ifBlank { resolved?.title ?: "" },
+                            color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                         )
+                        resolved?.let { stream ->
+                            Text(
+                                text = stream.uploaderName,
+                                color = PureAccent, fontSize = 12.sp
+                            )
+                        }
                     }
                 }
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
+                        .windowInsetsPadding(
+                            androidx.compose.foundation.layout.WindowInsets.safeDrawing
+                                .only(
+                                    androidx.compose.foundation.layout.WindowInsetsSides.Bottom +
+                                        androidx.compose.foundation.layout.WindowInsetsSides.Horizontal
+                                )
+                        )
                 ) {
                     chipsBlock()
                     controlsExtras()

@@ -628,6 +628,13 @@ fun FlatSettingsScreen() {
                 prefs.videoAspectMode.name.lowercase().replaceFirstChar { it.uppercase() }
             ) { cycleAspectMode() }
         },
+        SettingRowDef("2. Playback, PiP & Audio", "Show Title in Fullscreen",
+            "ON (default): the video title and channel name appear at the top of the fullscreen player when the controls are visible. OFF: no title overlay in fullscreen — just the video and controls. Either way the title respects your phone's curved edges and camera cutout.") {
+            Switch(
+                checked = prefs.showTitleInFullscreen,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(showTitleInFullscreen = v) } } }
+            )
+        },
         SettingRowDef("3. Focus & Feed Filters", "Double-Tap Search Resets",
             "Tapping the Search tab while you are already on Search clears the query, results, filter and scroll position for a fresh start.") {
             Switch(

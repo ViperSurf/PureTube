@@ -293,6 +293,28 @@ fun VideoOptionsButton(item: FeedItem) {
         }
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             DropdownMenuItem(
+                text = { Text("Share") },
+                onClick = {
+                    menuOpen = false
+                    runCatching {
+                        val shareIntent = android.content.Intent(
+                            android.content.Intent.ACTION_SEND
+                        ).apply {
+                            type = "text/plain"
+                            putExtra(
+                                android.content.Intent.EXTRA_TEXT,
+                                "${item.title}\nhttps://www.youtube.com/watch?v=${item.videoId}"
+                            )
+                            putExtra(android.content.Intent.EXTRA_SUBJECT, item.title)
+                        }
+                        context.startActivity(
+                            android.content.Intent.createChooser(shareIntent, "Share video")
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                }
+            )
+            DropdownMenuItem(
                 text = { Text("Watch Later") },
                 onClick = {
                     menuOpen = false
@@ -373,6 +395,51 @@ fun VideoOptionsButton(item: FeedItem) {
     if (showPlaylistDialog) {
         AddToPlaylistDialog(item = item, onDismiss = { showPlaylistDialog = false })
     }
+}
+
+/**
+ * v2.1: History gets its OWN display controls, stored separately from
+ * the Home/Search feed prefs (history thumbnails were full-size cards
+ * before). History rows are day-grouped in a column, so the layout
+ * cycle offers the row layouts (List / Both / Title only); the
+ * thumbnail scale defaults to Compact.
+ */
+@Composable
+fun HistoryDisplayControls(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val app = context.applicationContext as PureTubeApp
+    val scope = rememberCoroutineScope()
+    val prefs by app.preferences.state.collectAsState(initial = app.currentPrefs)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        val rowLayouts = listOf(FeedLayout.LIST, FeedLayout.BOTH, FeedLayout.TITLE_ONLY)
+        TextButton(onClick = {
+            val current = rowLayouts.indexOf(prefs.historyLayout).coerceAtLeast(0)
+            val next = rowLayouts[(current + 1) % rowLayouts.size]
+            scope.launch { app.preferences.update { it.copy(historyLayout = next) } }
+        }) { Text("Layout: ${historyLayoutLabel(prefs.historyLayout)}", fontSize = 12.sp) }
+        TextButton(onClick = {
+            val values = ThumbnailScale.entries
+            val next = values[(prefs.historyThumbnailScale.ordinal + 1) % values.size]
+            scope.launch { app.preferences.update { it.copy(historyThumbnailScale = next) } }
+        }) { Text("Size: ${historyScaleLabel(prefs.historyThumbnailScale)}", fontSize = 12.sp) }
+    }
+}
+
+fun historyLayoutLabel(layout: FeedLayout): String = when (layout) {
+    FeedLayout.LIST -> "List"
+    FeedLayout.BOTH -> "Both"
+    FeedLayout.TITLE_ONLY -> "Title only"
+    else -> "List"
+}
+
+fun historyScaleLabel(scale: ThumbnailScale): String = when (scale) {
+    ThumbnailScale.COMPACT -> "Compact"
+    ThumbnailScale.NORMAL -> "Normal"
+    ThumbnailScale.LARGE -> "Large"
 }
 
 /**

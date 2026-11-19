@@ -71,6 +71,11 @@ fun InlineTooltipBadge(tooltipExplanation: String) {
 /**
  * A settings row: title, universal (?) tooltip badge, and a trailing control.
  * The tooltip expands inline below the row — no modal popups anywhere.
+ *
+ * v2.1 uniform geometry: the row is split into two fixed halves —
+ * label + (?) badge in the left half, the control end-aligned in the
+ * right half — so every row in every section lines up identically and
+ * no control drifts with its label's length.
  */
 @Composable
 fun SettingRowWithTooltip(
@@ -91,31 +96,42 @@ fun SettingRowWithTooltip(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(
-                text = title,
-                color = Color.White,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f, fill = false)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .size(20.dp)
-                    .border(1.dp, PureAccent, CircleShape)
-                    .clickable { showTooltip = !showTooltip },
-                contentAlignment = Alignment.Center
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.weight(1f)
             ) {
                 Text(
-                    text = "?",
-                    color = PureAccent,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+                    text = title,
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
+                Spacer(modifier = Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .border(1.dp, PureAccent, CircleShape)
+                        .clickable { showTooltip = !showTooltip },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "?",
+                        color = PureAccent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                }
             }
-            Spacer(modifier = Modifier.weight(1f))
-            trailingControl()
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 12.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                trailingControl()
+            }
         }
         AnimatedVisibility(visible = showTooltip) {
             Text(
