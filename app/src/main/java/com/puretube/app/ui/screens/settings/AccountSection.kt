@@ -1,14 +1,12 @@
 package com.puretube.app.ui.screens.settings
 
-import android.webkit.CookieManager
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -20,6 +18,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,41 +29,48 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import coil3.compose.AsyncImage
 import com.puretube.app.PureTubeApp
+import com.puretube.app.domain.DeviceCodeParse
 import com.puretube.app.ui.theme.PureBorder
 import com.puretube.app.ui.theme.PureTextSecondary
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Settings → Account (v2.0): optional YouTube sign-in via the session
- * cookies the user already owns. Two routes:
- * (a) PRIMARY — paste the Cookie header (must include SAPISID); it is
- *     validated against YouTube (account_menu) before anything is kept.
- * (b) EXPERIMENTAL — an in-app WebView Google sign-in; after login the
- *     cookies are read from youtube.com. Google blocks embedded sign-in
- *     on some accounts/devices, hence the label.
+ * Settings → Account: optional YouTube sign-in (v2.1 routes).
  *
- * Security: the header is stored ONLY in Keystore-encrypted storage
- * (see CookieStore), is never part of settings export/import, and is
- * never logged. No Google password is ever collected by the app —
- * the WebView talks to Google directly. Sign out wipes the store.
+ * PRIMARY — device code (the TV-client flow): the app shows a short
+ * code; the user opens youtube.com/activate on ANY device (this
+ * phone's browser is fine — no computer, no DevTools) and approves.
+ * The app polls until approved, then stores the OAuth REFRESH token in
+ * Keystore-encrypted storage. This replaces the v2.0 WebView route,
+ * which Google blocks ("This browser or app may not be secure") — the
+ * WebView route is removed entirely.
+ *
+ * FALLBACK — paste the session Cookie header (must include SAPISID);
+ * it is validated against YouTube (account_menu) before anything is
+ * kept, exactly as in v2.0.
+ *
+ * Tokens/cookies are stored ONLY as Keystore ciphertext, are never
+ * part of settings export/import, and are never logged. Sign out
+ * wipes the store.
  */
 @Composable
 fun AccountSectionBlock(app: PureTubeApp) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val account by app.accountRepository.state.collectAsState()
     var cookieDraft by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var showWebView by remember { mutableStateOf(false) }
+    var deviceFlow by remember { mutableStateOf<DeviceCodeParse.DeviceCode?>(null) }
 
-    fun attemptSignIn(header: String) {
+    fun attemptCookieSignIn(header: String) {
         if (busy) return
         busy = true
         status = "Validating with YouTube…"
@@ -81,6 +87,51 @@ fun AccountSectionBlock(app: PureTubeApp) {
         }
     }
 
+    // Device-code polling loop: runs while a code is on screen.
+    LaunchedEffect(deviceFlow) {
+        val flow = deviceFlow ?: return@LaunchedEffect
+        var intervalSeconds = flow.intervalSeconds.coerceAtLeast(5)
+        val deadline = System.currentTimeMillis() + flow.expiresInSeconds * 1000L
+        while (deviceFlow == flow) {
+            delay(intervalSeconds * 1000L)
+            if (System.currentTimeMillis() > deadline) {
+                status = "That code expired — start again to get a fresh one."
+                deviceFlow = null
+                break
+            }
+            val outcome = app.accountRepository.pollDeviceSignIn(flow)
+                .getOrElse { e ->
+                    status = e.message ?: "Sign-in check failed."
+                    deviceFlow = null
+                    break
+                }
+            when (outcome) {
+                is DeviceCodeParse.TokenOutcome.Pending ->
+                    status = "Waiting for approval… enter the code at youtube.com/activate."
+                is DeviceCodeParse.TokenOutcome.SlowDown -> {
+                    intervalSeconds += 5
+                    status = "Waiting for approval…"
+                }
+                is DeviceCodeParse.TokenOutcome.Approved -> {
+                    status = "Signed in as ${app.accountRepository.state.value.name}."
+                    deviceFlow = null
+                }
+                is DeviceCodeParse.TokenOutcome.Denied -> {
+                    status = "Sign-in was denied on the other device. Nothing was stored."
+                    deviceFlow = null
+                }
+                is DeviceCodeParse.TokenOutcome.Expired -> {
+                    status = "That code expired — start again to get a fresh one."
+                    deviceFlow = null
+                }
+                is DeviceCodeParse.TokenOutcome.Failed -> {
+                    status = outcome.message
+                    deviceFlow = null
+                }
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -90,7 +141,7 @@ fun AccountSectionBlock(app: PureTubeApp) {
         Text(
             "Account — YouTube (optional)",
             color = Color.White, fontSize = 16.sp,
-            fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+            fontWeight = FontWeight.Medium
         )
         Spacer(modifier = Modifier.height(4.dp))
         if (account.signedIn) {
@@ -119,8 +170,10 @@ fun AccountSectionBlock(app: PureTubeApp) {
                     enabled = !busy,
                     onClick = {
                         busy = true
-                        status = "Syncing from your account…"
+                        status = "Syncing with your account…"
                         scope.launch {
+                            // Make sure the OAuth token is fresh first.
+                            runCatching { app.accountRepository.freshAccessToken() }
                             app.syncManager.syncNow()
                                 .onSuccess { report -> status = report.summary() }
                                 .onFailure { e ->
@@ -139,9 +192,13 @@ fun AccountSectionBlock(app: PureTubeApp) {
                 ) { Text("Sign out", fontSize = 12.sp) }
             }
             Text(
-                "Sync is pull-only: your playlists, history, subscriptions and " +
-                    "Liked videos are mirrored into this device. Likes, subscribes " +
-                    "and comments you make in PureTube go to YouTube directly.",
+                "Sync is two-way: it first pulls your playlists, history, " +
+                    "subscriptions and Liked videos into this device, then pushes " +
+                    "your local playlists up — creating the ones YouTube doesn't " +
+                    "have and adding only the videos they're missing. Likes, " +
+                    "subscribes and comments post to YouTube the moment you tap " +
+                    "them. Videos you watch while signed in are also registered " +
+                    "in your YouTube history (best effort).",
                 color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp,
                 modifier = Modifier.padding(top = 6.dp)
             )
@@ -150,15 +207,82 @@ fun AccountSectionBlock(app: PureTubeApp) {
             Text(
                 "Signing in is optional — everything works signed out. When signed " +
                     "in, Like/Dislike, Subscribe and comment posting act on your real " +
-                    "YouTube account, and Sync can mirror your playlists, history, " +
-                    "subscriptions and Liked videos into the local library. This uses " +
-                    "your session cookies (unofficial session use — YouTube may expire " +
-                    "them at any time). The cookies are stored only in encrypted, " +
-                    "Keystore-backed storage on this device, never in settings exports.",
+                    "YouTube account, and Sync keeps playlists in step both ways. " +
+                    "Sign-in is unofficial (the public YouTube TV client flow) — " +
+                    "Google may revoke it at any time. Tokens are stored only in " +
+                    "encrypted, Keystore-backed storage on this device, never in " +
+                    "settings exports. PureTube never asks for your Google password.",
                 color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp,
                 modifier = Modifier.padding(top = 4.dp)
             )
             Spacer(modifier = Modifier.height(6.dp))
+            val flow = deviceFlow
+            if (flow == null) {
+                Button(
+                    enabled = !busy,
+                    onClick = {
+                        busy = true
+                        status = "Asking Google for a sign-in code…"
+                        scope.launch {
+                            app.accountRepository.beginDeviceSignIn()
+                                .onSuccess { code ->
+                                    deviceFlow = code
+                                    status = "Enter the code at youtube.com/activate."
+                                }
+                                .onFailure { e ->
+                                    status = e.message ?: "Could not get a sign-in code."
+                                }
+                            busy = false
+                        }
+                    }
+                ) { Text("Sign in with a code (recommended)", fontSize = 12.sp) }
+                Text(
+                    "How it works: PureTube shows a short code. Open " +
+                        "youtube.com/activate in any browser — this phone's browser " +
+                        "is fine, no computer needed — sign in with Google there, " +
+                        "type the code, and approve. PureTube notices on its own.",
+                    color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            } else {
+                Text(
+                    "Your code:",
+                    color = PureTextSecondary, fontSize = 12.sp
+                )
+                Text(
+                    flow.userCode,
+                    color = Color.White, fontSize = 30.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        runCatching {
+                            context.startActivity(
+                                Intent(
+                                    Intent.ACTION_VIEW,
+                                    Uri.parse("https://www.youtube.com/activate")
+                                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }) { Text("Open youtube.com/activate", fontSize = 12.sp) }
+                    TextButton(onClick = {
+                        deviceFlow = null
+                        status = "Sign-in cancelled. Nothing was stored."
+                    }) { Text("Cancel", fontSize = 12.sp) }
+                }
+                Text(
+                    "Waiting for approval… this updates on its own once you approve. " +
+                        "The code expires in about ${flow.expiresInSeconds / 60} minutes.",
+                    color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                "Fallback — paste cookies",
+                color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium
+            )
             OutlinedTextField(
                 value = cookieDraft,
                 onValueChange = { cookieDraft = it },
@@ -166,7 +290,9 @@ fun AccountSectionBlock(app: PureTubeApp) {
                     Text("Paste Cookie header (must include SAPISID)…", fontSize = 12.sp)
                 },
                 singleLine = false,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
             )
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -174,17 +300,13 @@ fun AccountSectionBlock(app: PureTubeApp) {
             ) {
                 Button(
                     enabled = !busy && cookieDraft.isNotBlank(),
-                    onClick = { attemptSignIn(cookieDraft) }
+                    onClick = { attemptCookieSignIn(cookieDraft) }
                 ) { Text("Validate & sign in", fontSize = 12.sp) }
-                Button(
-                    enabled = !busy,
-                    onClick = { showWebView = true }
-                ) { Text("WebView sign-in (experimental)", fontSize = 12.sp) }
             }
             Text(
                 "How to get the header: on a computer, open youtube.com signed in, " +
                     "open DevTools → Network, click any request, and copy the full " +
-                    "Cookie request header. PureTube never asks for your Google password.",
+                    "Cookie request header.",
                 color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp,
                 modifier = Modifier.padding(top = 6.dp)
             )
@@ -194,90 +316,6 @@ fun AccountSectionBlock(app: PureTubeApp) {
                 status, color = PureTextSecondary, fontSize = 13.sp,
                 modifier = Modifier.padding(top = 6.dp)
             )
-        }
-    }
-
-    if (showWebView) {
-        YouTubeSignInWebViewDialog(
-            onDismiss = { showWebView = false },
-            onCookiesCaptured = { header ->
-                showWebView = false
-                attemptSignIn(header)
-            }
-        )
-    }
-}
-
-/**
- * Experimental in-app Google sign-in. The WebView loads YouTube; the
- * user signs in with Google directly (the app never sees the password);
- * "Use cookies" then reads the youtube.com cookies and hands them to
- * the same validation flow as the paste route.
- */
-@Composable
-private fun YouTubeSignInWebViewDialog(
-    onDismiss: () -> Unit,
-    onCookiesCaptured: (String) -> Unit
-) {
-    var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    var note by remember { mutableStateOf("") }
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp)
-        ) {
-            Text(
-                "Sign in with Google (experimental)",
-                color = Color.White, fontSize = 16.sp,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
-            )
-            Text(
-                "Google sometimes blocks sign-in inside embedded browsers. " +
-                    "If that happens here, use the paste-cookies route instead.",
-                color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp,
-                modifier = Modifier.padding(vertical = 6.dp)
-            )
-            AndroidView(
-                factory = { ctx ->
-                    WebView(ctx).apply {
-                        webViewRef = this
-                        settings.javaScriptEnabled = true
-                        settings.domStorageEnabled = true
-                        settings.userAgentString =
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-                            "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                            "Chrome/126.0.0.0 Safari/537.36"
-                        webViewClient = WebViewClient()
-                        loadUrl("https://www.youtube.com/")
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-            )
-            if (note.isNotBlank()) {
-                Text(note, color = Color(0xFFFF8080), fontSize = 12.sp)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    val cookies = runCatching {
-                        CookieManager.getInstance().getCookie("https://www.youtube.com")
-                    }.getOrNull().orEmpty()
-                    if (cookies.contains("SAPISID=")) {
-                        onCookiesCaptured(cookies)
-                    } else {
-                        note = "No SAPISID cookie yet — finish signing in on the page first."
-                    }
-                }) { Text("Use cookies from this page", fontSize = 12.sp) }
-                TextButton(onClick = {
-                    runCatching { webViewRef?.destroy() }
-                    onDismiss()
-                }) { Text("Close", fontSize = 12.sp) }
-            }
         }
     }
 }

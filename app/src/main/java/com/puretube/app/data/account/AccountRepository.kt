@@ -21,7 +21,8 @@ data class AccountState(
  */
 class AccountRepository(
     private val cookieStore: CookieStore,
-    private val innertubeClient: InnertubeClient
+    private val innertubeClient: InnertubeClient,
+    private val oauthClient: OAuthDeviceClient? = null
 ) {
     private val _state = MutableStateFlow(AccountState())
     val state: StateFlow<AccountState> = _state
@@ -88,5 +89,91 @@ class AccountRepository(
     fun signOut() {
         cookieStore.clear()
         _state.value = AccountState()
+    }
+
+    // ------------------------------------------------------------------
+    // v2.1: device-code sign-in (no computer, no DevTools, no WebView)
+    // ------------------------------------------------------------------
+
+    /** Step 1: ask Google for a user code to show in the app. */
+    suspend fun beginDeviceSignIn():
+        Result<com.puretube.app.domain.DeviceCodeParse.DeviceCode> {
+        val client = oauthClient ?: return Result.failure(
+            IllegalStateException("Device sign-in is unavailable.")
+        )
+        return client.requestDeviceCode()
+    }
+
+    /**
+     * Step 2: one poll. On approval the token is validated against
+     * YouTube (account_menu with Bearer), the REFRESH token is stored
+     * encrypted, and the account state flips to signed in. All other
+     * outcomes pass through for the UI's waiting/denied/expired states.
+     */
+    suspend fun pollDeviceSignIn(
+        code: com.puretube.app.domain.DeviceCodeParse.DeviceCode
+    ): Result<com.puretube.app.domain.DeviceCodeParse.TokenOutcome> {
+        val client = oauthClient ?: return Result.failure(
+            IllegalStateException("Device sign-in is unavailable.")
+        )
+        val outcome = client.pollOnce(code.deviceCode)
+            .getOrElse { return Result.failure(it) }
+        if (outcome is com.puretube.app.domain.DeviceCodeParse.TokenOutcome.Approved) {
+            if (!cookieStore.isAvailable) {
+                return Result.failure(
+                    IllegalStateException(
+                        "Encrypted storage is unavailable on this device, so the session cannot be stored safely."
+                    )
+                )
+            }
+            val account = innertubeClient.whoamiWithToken(outcome.accessToken)
+                .getOrElse { return Result.failure(it) }
+            cookieStore.save(
+                StoredAccount(
+                    cookieHeader = "",
+                    name = account.name,
+                    avatarUrl = account.avatarUrl,
+                    handle = account.handle,
+                    refreshToken = outcome.refreshToken.orEmpty(),
+                    accessToken = outcome.accessToken,
+                    accessTokenExpiresAtMs = outcome.expiresAtMs
+                )
+            )
+            _state.value = AccountState(
+                signedIn = true,
+                name = account.name,
+                avatarUrl = account.avatarUrl,
+                handle = account.handle
+            )
+        }
+        return Result.success(outcome)
+    }
+
+    /**
+     * A currently-valid OAuth access token for the Innertube client,
+     * refreshing from the stored refresh token when the cached one is
+     * expired (or about to be). Null when signed out / cookie-only.
+     */
+    suspend fun freshAccessToken(): String? {
+        val stored = cookieStore.load() ?: return null
+        if (stored.accessToken.isNotBlank() &&
+            stored.accessTokenExpiresAtMs > System.currentTimeMillis() + 30_000L
+        ) {
+            return stored.accessToken
+        }
+        if (stored.refreshToken.isBlank()) return null
+        val client = oauthClient ?: return null
+        val outcome = client.refresh(stored.refreshToken).getOrNull()
+        if (outcome is com.puretube.app.domain.DeviceCodeParse.TokenOutcome.Approved) {
+            cookieStore.save(
+                stored.copy(
+                    accessToken = outcome.accessToken,
+                    accessTokenExpiresAtMs = outcome.expiresAtMs,
+                    refreshToken = outcome.refreshToken ?: stored.refreshToken
+                )
+            )
+            return outcome.accessToken
+        }
+        return null
     }
 }

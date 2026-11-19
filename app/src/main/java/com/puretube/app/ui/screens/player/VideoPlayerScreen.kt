@@ -642,6 +642,17 @@ fun VideoPlayerScreen(
         }
     }
 
+    // v2.1 best-effort history push: when signed in, register the watch
+    // with the account once per video (fires the playback beacon so the
+    // video lands in the account's YouTube history). Failures are
+    // silent by design; local history does not depend on it.
+    LaunchedEffect(resolved, account.signedIn) {
+        val stream = resolved ?: return@LaunchedEffect
+        if (!account.signedIn) return@LaunchedEffect
+        runCatching { app.accountRepository.freshAccessToken() }
+        runCatching { app.innertubeClient.registerWatch(stream.videoId) }
+    }
+
     // v2.1: fetch + parse the selected caption track's cues.
     LaunchedEffect(selectedCaption) {
         val track = selectedCaption

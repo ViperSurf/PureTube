@@ -38,8 +38,25 @@ class SessionExpiredException(message: String = "Session expired — sign in aga
  */
 class InnertubeClient(
     private val okHttpClient: OkHttpClient,
-    private val cookieProvider: () -> String?
+    private val cookieProvider: () -> String?,
+    /** v2.1: OAuth access token provider (device-code sign-in). */
+    private val bearerTokenProvider: () -> String? = { null }
 ) {
+
+    /** How a request authenticates: session cookies (v2.0) or OAuth Bearer (v2.1). */
+    private sealed interface Auth {
+        data class Cookie(val header: String) : Auth
+        data class Bearer(val token: String) : Auth
+    }
+
+    /** Cookie auth wins when usable; otherwise a stored OAuth token. */
+    private fun resolveAuth(): Auth? {
+        cookieProvider()?.takeIf { CookieHeader.isUsable(it) }
+            ?.let { return Auth.Cookie(it) }
+        bearerTokenProvider()?.takeIf { it.isNotBlank() }
+            ?.let { return Auth.Bearer(it) }
+        return null
+    }
     private val json = Json { ignoreUnknownKeys = true }
 
     companion object {
@@ -67,20 +84,29 @@ class InnertubeClient(
         return JsonObject(base + extra)
     }
 
-    /** POSTs to an Innertube endpoint with the given cookie header. Throws on failure. */
-    private fun postRaw(endpoint: String, body: JsonObject, cookieHeader: String): JsonElement {
-        val sapisid = CookieHeader.sapisid(cookieHeader)
-            ?: throw SessionExpiredException()
-        val timestamp = System.currentTimeMillis() / 1000
-        val request = Request.Builder()
+    /** POSTs to an Innertube endpoint with the given auth. Throws on failure. */
+    private fun postRaw(endpoint: String, body: JsonObject, auth: Auth): JsonElement {
+        val builder = Request.Builder()
             .url("$BASE_URL$endpoint?key=$API_KEY&prettyPrint=false")
             .header("Content-Type", "application/json")
             .header("User-Agent", USER_AGENT)
             .header("Origin", SapisidHash.ORIGIN)
             .header("Referer", "https://www.youtube.com/")
             .header("X-Origin", SapisidHash.ORIGIN)
-            .header("Cookie", cookieHeader)
-            .header("Authorization", SapisidHash.authorizationHeader(sapisid, timestamp))
+        when (auth) {
+            is Auth.Cookie -> {
+                val sapisid = CookieHeader.sapisid(auth.header)
+                    ?: throw SessionExpiredException()
+                val timestamp = System.currentTimeMillis() / 1000
+                builder.header("Cookie", auth.header)
+                builder.header(
+                    "Authorization",
+                    SapisidHash.authorizationHeader(sapisid, timestamp)
+                )
+            }
+            is Auth.Bearer -> builder.header("Authorization", "Bearer ${auth.token}")
+        }
+        val request = builder
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .build()
         okHttpClient.newCall(request).execute().use { resp ->
@@ -98,9 +124,8 @@ class InnertubeClient(
     private suspend fun post(endpoint: String, body: JsonObject): Result<JsonElement> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val header = cookieProvider()?.takeIf { CookieHeader.isUsable(it) }
-                    ?: throw SessionExpiredException("Not signed in")
-                postRaw(endpoint, body, header)
+                val auth = resolveAuth() ?: throw SessionExpiredException("Not signed in")
+                postRaw(endpoint, body, auth)
             }
         }
 
@@ -117,10 +142,26 @@ class InnertubeClient(
                         "That cookie text has no SAPISID cookie — copy the full Cookie header."
                     )
                 }
-                val root = postRaw("account/account_menu", contextJson(), cookieHeader)
+                val root = postRaw(
+                    "account/account_menu", contextJson(), Auth.Cookie(cookieHeader)
+                )
                 InnertubeParse.parseAccount(root)
                     ?: throw RuntimeException(
                         "Signed in, but the account name could not be read — the cookies may be incomplete."
+                    )
+            }
+        }
+
+    /** v2.1: validates an OAuth access token and reads the account identity. */
+    suspend fun whoamiWithToken(accessToken: String): Result<ParsedAccount> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val root = postRaw(
+                    "account/account_menu", contextJson(), Auth.Bearer(accessToken)
+                )
+                InnertubeParse.parseAccount(root)
+                    ?: throw RuntimeException(
+                        "Signed in, but the account name could not be read."
                     )
             }
         }
@@ -176,24 +217,110 @@ class InnertubeClient(
     suspend fun createComment(videoId: String, text: String): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val header = cookieProvider()?.takeIf { CookieHeader.isUsable(it) }
-                    ?: throw SessionExpiredException("Not signed in")
+                val auth = resolveAuth() ?: throw SessionExpiredException("Not signed in")
                 val watchBody = mergedContext(buildJsonObject { put("videoId", videoId) })
-                val watch = postRaw("next", watchBody, header)
+                val watch = postRaw("next", watchBody, auth)
                 val continuation = InnertubeParse.findCommentsContinuation(watch)
                     ?: throw RuntimeException("Comments are unavailable for this video.")
                 val contBody = mergedContext(buildJsonObject { put("continuation", continuation) })
-                val comments = postRaw("next", contBody, header)
+                val comments = postRaw("next", contBody, auth)
                 val params = InnertubeParse.findCreateCommentParams(comments)
                     ?: throw RuntimeException("Comment posting is unavailable for this video.")
                 val createBody = mergedContext(buildJsonObject {
                     put("createCommentParams", params)
                     put("commentText", text)
                 })
-                postRaw("comment/create", createBody, header)
+                postRaw("comment/create", createBody, auth)
                 Unit
             }
         }
+
+    // ------------------------------------------------------------------
+    // Playlist push (v2.1 two-way sync)
+    // ------------------------------------------------------------------
+
+    /** Creates a playlist on the account; returns its YouTube playlist id. */
+    suspend fun createPlaylist(title: String, privacyStatus: String): Result<String> {
+        val body = mergedContext(buildJsonObject {
+            put("title", title)
+            put("privacyStatus", privacyStatus)
+        })
+        return post("playlist/create", body).map { root ->
+            InnertubeParse.findString(root, "playlistId")
+                ?: throw RuntimeException("YouTube did not return the new playlist id.")
+        }
+    }
+
+    /** Adds videos to an account playlist (one edit call, many actions). */
+    suspend fun addVideosToPlaylist(playlistId: String, videoIds: List<String>): Result<Unit> {
+        if (videoIds.isEmpty()) return Result.success(Unit)
+        val body = mergedContext(buildJsonObject {
+            put("playlistId", playlistId)
+            putJsonArray("actions") {
+                videoIds.forEach { id ->
+                    add(
+                        buildJsonObject {
+                            put("action", "ACTION_ADD_VIDEO")
+                            put("addedVideoId", id)
+                        }
+                    )
+                }
+            }
+        })
+        return post("browse/edit_playlist", body).map { }
+    }
+
+    /** Current video ids of an account playlist (for push diffing). */
+    suspend fun playlistVideoIds(playlistId: String): Result<List<String>> =
+        browse(
+            com.puretube.app.domain.PlaylistPushPlanner.remoteBrowseId(playlistId)
+        ).map { root -> InnertubeParse.parseVideos(root).map { it.videoId } }
+
+    // ------------------------------------------------------------------
+    // Watch-history beacon (v2.1, best-effort)
+    // ------------------------------------------------------------------
+
+    /**
+     * Best-effort history push: asks the authenticated player endpoint
+     * for this video and fires its videostats watchtime URL once, which
+     * is what registers the watch in the account's YouTube history.
+     * Any failure is silent by design (the caller reports it as
+     * best-effort); local history is unaffected.
+     */
+    suspend fun registerWatch(videoId: String): Result<Unit> {
+        val body = mergedContext(buildJsonObject { put("videoId", videoId) })
+        val root = post("player", body).getOrElse { return Result.failure(it) }
+        val url = InnertubeParse.findString(root, "videostatsWatchtimeUrl")
+            ?: return Result.success(Unit)
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val auth = resolveAuth() ?: throw SessionExpiredException("Not signed in")
+                val builder = Request.Builder().url(url).get()
+                    .header("User-Agent", USER_AGENT)
+                when (auth) {
+                    is Auth.Cookie -> {
+                        val sapisid = CookieHeader.sapisid(auth.header)
+                            ?: throw SessionExpiredException()
+                        builder.header("Cookie", auth.header)
+                        builder.header(
+                            "Authorization",
+                            SapisidHash.authorizationHeader(
+                                sapisid, System.currentTimeMillis() / 1000
+                            )
+                        )
+                    }
+                    is Auth.Bearer ->
+                        builder.header("Authorization", "Bearer ${auth.token}")
+                }
+                okHttpClient.newCall(builder.build()).execute().use { resp ->
+                    if (resp.code == 401 || resp.code == 403) {
+                        throw SessionExpiredException()
+                    }
+                }
+                Unit
+            }
+        }
+    }
 
     // ------------------------------------------------------------------
     // Browses for sync

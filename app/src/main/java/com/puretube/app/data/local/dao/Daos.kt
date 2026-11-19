@@ -92,6 +92,9 @@ interface PlaylistDao {
     @Query("UPDATE local_playlists SET visibility = :visibility WHERE playlistId = :playlistId")
     suspend fun setVisibility(playlistId: Long, visibility: PlaylistVisibility)
 
+    @Query("UPDATE local_playlists SET youtubePlaylistId = :youtubeId WHERE playlistId = :playlistId")
+    suspend fun setYoutubeId(playlistId: Long, youtubeId: String?)
+
     @Query("SELECT * FROM playlist_videos WHERE playlistId = :playlistId ORDER BY positionIndex ASC")
     fun observeVideos(playlistId: Long): Flow<List<PlaylistVideoCrossRef>>
 

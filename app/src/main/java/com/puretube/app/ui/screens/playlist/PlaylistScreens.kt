@@ -163,6 +163,31 @@ fun LocalPlaylistScreen(
                 }
                 TextButton(onClick = { confirmDelete = true }) { Text("Delete playlist", fontSize = 13.sp) }
             }
+            // v2.1: push this playlist to the signed-in YouTube account.
+            val accountState by app.accountRepository.state.collectAsState()
+            Row {
+                TextButton(
+                    enabled = accountState.signedIn,
+                    onClick = {
+                        scope.launch {
+                            status = "Pushing to YouTube…"
+                            runCatching { app.accountRepository.freshAccessToken() }
+                            app.syncManager.pushPlaylist(pl)
+                                .onSuccess { outcome -> status = outcome.message }
+                                .onFailure { e ->
+                                    status = e.message ?: "Push failed."
+                                }
+                        }
+                    }
+                ) { Text("Push to YouTube", fontSize = 13.sp) }
+                if (!accountState.signedIn) {
+                    Text(
+                        "Sign in (Settings → Account) to push",
+                        color = PureTextSecondary, fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                }
+            }
         }
         if (videos.isEmpty()) {
             Text("This playlist is empty.", color = PureTextSecondary, fontSize = 14.sp)

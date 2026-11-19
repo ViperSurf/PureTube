@@ -16,7 +16,12 @@ data class StoredAccount(
     val cookieHeader: String,
     val name: String,
     val avatarUrl: String,
-    val handle: String
+    val handle: String,
+    /** v2.1 device-code OAuth: refresh token (long-lived credential). */
+    val refreshToken: String = "",
+    /** v2.1: current OAuth access token + expiry (short-lived). */
+    val accessToken: String = "",
+    val accessTokenExpiresAtMs: Long = 0L
 )
 
 /**
@@ -51,6 +56,12 @@ class CookieStore(context: Context) {
                 .putString(KEY_NAME, encrypt(k, account.name))
                 .putString(KEY_AVATAR, encrypt(k, account.avatarUrl))
                 .putString(KEY_HANDLE, encrypt(k, account.handle))
+                .putString(KEY_REFRESH, encrypt(k, account.refreshToken))
+                .putString(KEY_ACCESS, encrypt(k, account.accessToken))
+                .putString(
+                    KEY_ACCESS_EXP,
+                    encrypt(k, account.accessTokenExpiresAtMs.toString())
+                )
                 .apply()
         }
     }
@@ -58,13 +69,23 @@ class CookieStore(context: Context) {
     fun load(): StoredAccount? {
         val k = key ?: return null
         return runCatching {
-            val cookie = decrypt(k, prefs.getString(KEY_COOKIE, null))
-                ?.takeIf { it.isNotBlank() } ?: return@runCatching null
+            val cookie = decrypt(k, prefs.getString(KEY_COOKIE, null)).orEmpty()
+            val refresh = decrypt(k, prefs.getString(KEY_REFRESH, null)).orEmpty()
+            val access = decrypt(k, prefs.getString(KEY_ACCESS, null)).orEmpty()
+            // An account exists with a cookie session (v2.0) or any OAuth
+            // token from the v2.1 device-code sign-in.
+            if (cookie.isBlank() && refresh.isBlank() && access.isBlank()) {
+                return@runCatching null
+            }
             StoredAccount(
                 cookieHeader = cookie,
                 name = decrypt(k, prefs.getString(KEY_NAME, null)).orEmpty(),
                 avatarUrl = decrypt(k, prefs.getString(KEY_AVATAR, null)).orEmpty(),
-                handle = decrypt(k, prefs.getString(KEY_HANDLE, null)).orEmpty()
+                handle = decrypt(k, prefs.getString(KEY_HANDLE, null)).orEmpty(),
+                refreshToken = refresh,
+                accessToken = access,
+                accessTokenExpiresAtMs = decrypt(k, prefs.getString(KEY_ACCESS_EXP, null))
+                    ?.toLongOrNull() ?: 0L
             )
         }.getOrNull()
     }
@@ -127,5 +148,8 @@ class CookieStore(context: Context) {
         private const val KEY_NAME = "account_name"
         private const val KEY_AVATAR = "account_avatar"
         private const val KEY_HANDLE = "account_handle"
+        private const val KEY_REFRESH = "oauth_refresh_token"
+        private const val KEY_ACCESS = "oauth_access_token"
+        private const val KEY_ACCESS_EXP = "oauth_access_expiry"
     }
 }

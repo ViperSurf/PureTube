@@ -10,6 +10,7 @@ import com.puretube.app.data.remote.innertube.InnertubeClient
 import com.puretube.app.domain.InnertubeParse
 import com.puretube.app.domain.ParsedVideo
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 /** Counts from one sync run, plus per-section notes for failures. */
@@ -18,24 +19,37 @@ data class SyncReport(
     val playlistVideos: Int = 0,
     val historyAdded: Int = 0,
     val subscriptionsAdded: Int = 0,
+    val playlistsPushed: Int = 0,
+    val videosPushed: Int = 0,
     val notes: List<String> = emptyList()
 ) {
     fun summary(): String {
         val base = "Synced $playlistsSynced playlists ($playlistVideos videos), " +
-            "$historyAdded history entries, $subscriptionsAdded new subscriptions."
+            "$historyAdded history entries, $subscriptionsAdded new subscriptions. " +
+            "Pushed $playlistsPushed playlists ($videosPushed videos added)."
         return if (notes.isEmpty()) base else base + " Notes: " + notes.joinToString(" ")
     }
 }
 
+/** Outcome of pushing one local playlist to the account (v2.1). */
+data class PushOutcome(
+    val created: Boolean,
+    val videosAdded: Int,
+    val message: String
+)
+
 /**
- * Pull-only account sync (v2.0): the account's playlists, watch history,
- * subscriptions and liked videos are mirrored INTO the local library.
- * Nothing local is ever pushed back by sync — the only writes to the
- * account are the direct like / subscribe / comment actions. Each
- * section fails soft: a broken section lands in the report's notes and
- * the rest still sync. Local rows always win over synced ones (a synced
- * history entry never overwrites a local resume position; local-only
- * subscriptions and playlists are never deleted).
+ * Two-way account sync (v2.1; pull-only in v2.0): PULL mirrors the
+ * account's playlists, watch history, subscriptions and liked videos
+ * INTO the local library; PUSH then uploads local playlists — creating
+ * the ones YouTube doesn't have yet and adding only the videos the
+ * account copy is missing. Likes / subscribes / comments post live at
+ * tap time (not via sync). Watch history push is a best-effort beacon
+ * from the player, not part of sync. Each section fails soft: a broken
+ * section lands in the report's notes and the rest still sync. Local
+ * rows always win over synced ones (a synced history entry never
+ * overwrites a local resume position; local-only subscriptions and
+ * playlists are never deleted).
  */
 class YouTubeSyncManager(
     private val database: AppDatabase,
@@ -136,15 +150,106 @@ class YouTubeSyncManager(
                     notes.add("Subscriptions skipped: ${e.message ?: "browse failed"}.")
                 }
 
+            // ---- Playlist PUSH (v2.1): local playlists YouTube lacks ----
+            var playlistsPushed = 0
+            var videosPushed = 0
+            val localPlaylists = runCatching {
+                database.playlistDao().observePlaylists().first()
+            }.getOrDefault(emptyList())
+            for (playlist in localPlaylists) {
+                val storedId = playlist.youtubePlaylistId
+                // Mirrors of account playlists carry "VL…" browse ids —
+                // they already live on YouTube; skip them here.
+                if (storedId != null && storedId.startsWith("VL")) continue
+                pushPlaylist(playlist)
+                    .onSuccess { outcome ->
+                        playlistsPushed++
+                        videosPushed += outcome.videosAdded
+                    }
+                    .onFailure { e ->
+                        notes.add(
+                            "Push \"${playlist.name}\" failed: ${e.message ?: "unknown error"}."
+                        )
+                    }
+            }
+
             SyncReport(
                 playlistsSynced = playlistsSynced,
                 playlistVideos = playlistVideos,
                 historyAdded = historyAdded,
                 subscriptionsAdded = subscriptionsAdded,
+                playlistsPushed = playlistsPushed,
+                videosPushed = videosPushed,
                 notes = notes
             )
         }
     }
+
+    /**
+     * Pushes ONE local playlist to the account (v2.1): creates it on
+     * YouTube when it has no YouTube id yet (storing the returned id),
+     * otherwise adds only the videos the account copy is missing.
+     * Synced mirrors ("VL…" ids) and system playlists (LL/WL) are
+     * refused with a message.
+     */
+    suspend fun pushPlaylist(playlist: LocalPlaylistEntity): Result<PushOutcome> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val dao = database.playlistDao()
+                val storedId = playlist.youtubePlaylistId
+                if (storedId != null && storedId.startsWith("VL")) {
+                    throw IllegalStateException(
+                        "This playlist is a synced mirror — it already lives on YouTube."
+                    )
+                }
+                if (!com.puretube.app.domain.PlaylistPushPlanner
+                        .isEditable(storedId)
+                ) {
+                    throw IllegalStateException(
+                        "That playlist can't be pushed (system playlist)."
+                    )
+                }
+                val localIds = dao.getVideos(playlist.playlistId).map { it.videoId }
+                if (storedId == null) {
+                    val privacy = when (playlist.visibility) {
+                        PlaylistVisibility.PUBLIC -> "PUBLIC"
+                        PlaylistVisibility.UNLISTED -> "UNLISTED"
+                        PlaylistVisibility.PRIVATE -> "PRIVATE"
+                    }
+                    val newId = innertubeClient.createPlaylist(playlist.name, privacy)
+                        .getOrThrow()
+                    dao.setYoutubeId(playlist.playlistId, newId)
+                    if (localIds.isNotEmpty()) {
+                        innertubeClient.addVideosToPlaylist(newId, localIds).getOrThrow()
+                    }
+                    PushOutcome(
+                        created = true,
+                        videosAdded = localIds.size,
+                        message = "Created \"${playlist.name}\" on YouTube " +
+                            "with ${localIds.size} videos."
+                    )
+                } else {
+                    val remoteIds = innertubeClient.playlistVideoIds(storedId)
+                        .getOrThrow()
+                    val missing = com.puretube.app.domain.PlaylistPushPlanner
+                        .missingVideos(localIds, remoteIds)
+                    if (missing.isNotEmpty()) {
+                        innertubeClient.addVideosToPlaylist(storedId, missing)
+                            .getOrThrow()
+                    }
+                    PushOutcome(
+                        created = false,
+                        videosAdded = missing.size,
+                        message = if (missing.isEmpty()) {
+                            "\"${playlist.name}\" is already up to date on YouTube."
+                        } else {
+                            "Added ${missing.size} missing videos to " +
+                                "\"${playlist.name}\" on YouTube."
+                        }
+                    )
+                }
+            }
+        }
 
     /** Creates or refreshes the local mirror of one account playlist. */
     private suspend fun replaceSyncedPlaylist(

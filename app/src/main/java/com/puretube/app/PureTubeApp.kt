@@ -123,8 +123,31 @@ class PureTubeApp : Application() {
         // Account stack: the Innertube client reads the cookie header
         // straight from encrypted storage (present only while signed in).
         cookieStore = CookieStore(this)
-        innertubeClient = InnertubeClient(okHttpClient) { cookieStore.load()?.cookieHeader }
-        accountRepository = AccountRepository(cookieStore, innertubeClient)
+        innertubeClient = InnertubeClient(
+            okHttpClient,
+            { cookieStore.load()?.cookieHeader },
+            {
+                // v2.1 OAuth Bearer: only a currently-valid access token
+                // is handed out synchronously; refresh happens through
+                // AccountRepository.freshAccessToken on suspend paths.
+                val stored = cookieStore.load()
+                stored?.accessToken?.takeIf {
+                    it.isNotBlank() &&
+                        stored.accessTokenExpiresAtMs >
+                        System.currentTimeMillis() + 30_000L
+                }
+            }
+        )
+        accountRepository = AccountRepository(
+            cookieStore,
+            innertubeClient,
+            com.puretube.app.data.account.OAuthDeviceClient(okHttpClient)
+        )
+        // Proactively refresh an expired OAuth token at startup so
+        // account actions work without waiting for a sync.
+        appScope.launch {
+            runCatching { accountRepository.freshAccessToken() }
+        }
         syncManager = YouTubeSyncManager(database, innertubeClient)
 
         // Volume-zero rule monitor (pause at zero, stop if it stays zero).
