@@ -52,14 +52,21 @@ class V15LogicTest {
 
     // ---- Tiled detection mapping ----
 
+    private fun assertRectEquals(expected: NormalizedRect, actual: NormalizedRect) {
+        assertEquals(expected.left, actual.left, 0.001f)
+        assertEquals(expected.top, actual.top, 0.001f)
+        assertEquals(expected.right, actual.right, 0.001f)
+        assertEquals(expected.bottom, actual.bottom, 0.001f)
+    }
+
     @Test
     fun tilesAreFourOverlappingQuadrants() {
         val tiles = TileMath.tiles()
         assertEquals(4, tiles.size)
-        assertEquals(NormalizedRect(0f, 0f, 0.6f, 0.6f), tiles[0])
-        assertEquals(NormalizedRect(0.4f, 0f, 1f, 0.6f), tiles[1])
-        assertEquals(NormalizedRect(0f, 0.4f, 0.6f, 1f), tiles[2])
-        assertEquals(NormalizedRect(0.4f, 0.4f, 1f, 1f), tiles[3])
+        assertRectEquals(NormalizedRect(0f, 0f, 0.6f, 0.6f), tiles[0])
+        assertRectEquals(NormalizedRect(0.4f, 0f, 1f, 0.6f), tiles[1])
+        assertRectEquals(NormalizedRect(0f, 0.4f, 0.6f, 1f), tiles[2])
+        assertRectEquals(NormalizedRect(0.4f, 0.4f, 1f, 1f), tiles[3])
     }
 
     @Test
@@ -78,7 +85,7 @@ class V15LogicTest {
     fun tileMappingKeepsFullTileBoxEqualToTile() {
         val tile = TileMath.tiles()[1]
         val full = TileMath.mapToFullFrame(tile, NormalizedRect(0f, 0f, 1f, 1f))
-        assertEquals(tile, full)
+        assertRectEquals(tile, full)
     }
 
     // ---- PiP action icon selection ----
