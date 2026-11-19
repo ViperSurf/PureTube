@@ -67,6 +67,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
@@ -1252,7 +1253,7 @@ fun VideoPlayerScreen(
                     }
                 )
                 StateChip(
-                    label = "⌄ Minimize",
+                    label = stringResource(com.puretube.app.R.string.player_minimize),
                     active = false,
                     activeColor = PureAccent,
                     onClick = { onMinimize() }
@@ -1668,7 +1669,10 @@ fun VideoPlayerScreen(
                             )
                         }
                     }) {
-                        Text("Share", fontSize = 12.sp)
+                        Text(
+                            stringResource(com.puretube.app.R.string.player_share),
+                            fontSize = 12.sp
+                        )
                     }
                     TextButton(onClick = {
                         scope.launch {

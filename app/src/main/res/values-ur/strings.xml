@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nav_home">ہوم</string>
+    <string name="nav_search">تلاش</string>
+    <string name="nav_subscriptions">سبسکرپشنز</string>
+    <string name="nav_library">لائبریری</string>
+    <string name="nav_settings">ترتیبات</string>
+
+    <string name="settings_title">ترتیبات</string>
+    <string name="settings_filter_hint">ترتیبات کو فلٹر کریں…</string>
+    <string name="section_haramblur">1. HaramBlur تحفظ</string>
+    <string name="section_playback">2. پلے بیک، PiP اور آڈیو</string>
+    <string name="section_focus">3. توجہ اور فیڈ فلٹرز</string>
+    <string name="section_sponsorblock">4. SponsorBlock اور بیک اپ</string>
+    <string name="section_history">5. ہسٹری، قطار اور ڈیٹا</string>
+    <string name="section_language">6. زبان اور علاقہ</string>
+    <string name="section_signin">7. سائن ان اور مطابقت پذیری</string>
+    <string name="section_captions">8. کیپشنز</string>
+    <string name="section_diagnostics">تشخیص اور ڈیٹا کے اقدامات</string>
+
+    <string name="player_minimize">⌄ چھوٹا کریں</string>
+    <string name="player_fullscreen">پوری اسکرین</string>
+    <string name="player_exit_fullscreen">پوری اسکرین سے باہر نکلیں</string>
+    <string name="player_captions">کیپشنز</string>
+    <string name="player_audio">آڈیو</string>
+    <string name="player_share">شیئر</string>
+
+    <string name="common_on">آن</string>
+    <string name="common_off">آف</string>
+    <string name="common_cancel">منسوخ</string>
+    <string name="common_done">ہو گیا</string>
+</resources>

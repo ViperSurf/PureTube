@@ -1,4 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Core UI strings (v2.1). Only the CORE surface is localized — bottom
+  navigation, Settings title/section headers, player chips and common
+  actions — in English, Arabic, Spanish, French, Turkish and Urdu.
+  Long-tail strings (help/tooltip text, diagnostics, notices) remain
+  English; see README "Language".
+-->
 <resources>
     <string name="app_name">PureTube</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_search">Search</string>
+    <string name="nav_subscriptions">Subscriptions</string>
+    <string name="nav_library">Library</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Settings chrome -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_filter_hint">Filter settings…</string>
+    <string name="section_haramblur">1. HaramBlur Protection</string>
+    <string name="section_playback">2. Playback, PiP &amp; Audio</string>
+    <string name="section_focus">3. Focus &amp; Feed Filters</string>
+    <string name="section_sponsorblock">4. SponsorBlock &amp; Backup</string>
+    <string name="section_history">5. History, Queue &amp; Data</string>
+    <string name="section_language">6. Language &amp; Region</string>
+    <string name="section_signin">7. Sign-in &amp; Sync</string>
+    <string name="section_captions">8. Captions</string>
+    <string name="section_diagnostics">Diagnostics &amp; Data Actions</string>
+
+    <!-- Player -->
+    <string name="player_minimize">⌄ Minimize</string>
+    <string name="player_fullscreen">Fullscreen</string>
+    <string name="player_exit_fullscreen">Exit fullscreen</string>
+    <string name="player_captions">Captions</string>
+    <string name="player_audio">Audio</string>
+    <string name="player_share">Share</string>
+
+    <!-- Common -->
+    <string name="common_on">On</string>
+    <string name="common_off">Off</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="common_done">Done</string>
 </resources>

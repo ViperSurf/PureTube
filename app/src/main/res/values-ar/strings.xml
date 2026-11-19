@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nav_home">الرئيسية</string>
+    <string name="nav_search">بحث</string>
+    <string name="nav_subscriptions">الاشتراكات</string>
+    <string name="nav_library">المكتبة</string>
+    <string name="nav_settings">الإعدادات</string>
+
+    <string name="settings_title">الإعدادات</string>
+    <string name="settings_filter_hint">تصفية الإعدادات…</string>
+    <string name="section_haramblur">1. حماية HaramBlur</string>
+    <string name="section_playback">2. التشغيل والصورة داخل صورة والصوت</string>
+    <string name="section_focus">3. التركيز ومرشحات الخلاصة</string>
+    <string name="section_sponsorblock">4. SponsorBlock والنسخ الاحتياطي</string>
+    <string name="section_history">5. السجل وقائمة الانتظار والبيانات</string>
+    <string name="section_language">6. اللغة والمنطقة</string>
+    <string name="section_signin">7. تسجيل الدخول والمزامنة</string>
+    <string name="section_captions">8. التسميات التوضيحية</string>
+    <string name="section_diagnostics">التشخيص وإجراءات البيانات</string>
+
+    <string name="player_minimize">⌄ تصغير</string>
+    <string name="player_fullscreen">ملء الشاشة</string>
+    <string name="player_exit_fullscreen">إنهاء ملء الشاشة</string>
+    <string name="player_captions">التسميات التوضيحية</string>
+    <string name="player_audio">الصوت</string>
+    <string name="player_share">مشاركة</string>
+
+    <string name="common_on">تشغيل</string>
+    <string name="common_off">إيقاف</string>
+    <string name="common_cancel">إلغاء</string>
+    <string name="common_done">تم</string>
+</resources>

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nav_home">Ana Sayfa</string>
+    <string name="nav_search">Ara</string>
+    <string name="nav_subscriptions">Abonelikler</string>
+    <string name="nav_library">Kitaplık</string>
+    <string name="nav_settings">Ayarlar</string>
+
+    <string name="settings_title">Ayarlar</string>
+    <string name="settings_filter_hint">Ayarları filtrele…</string>
+    <string name="section_haramblur">1. HaramBlur Koruması</string>
+    <string name="section_playback">2. Oynatma, PiP ve Ses</string>
+    <string name="section_focus">3. Odak ve Akış Filtreleri</string>
+    <string name="section_sponsorblock">4. SponsorBlock ve Yedekleme</string>
+    <string name="section_history">5. Geçmiş, Sıra ve Veriler</string>
+    <string name="section_language">6. Dil ve Bölge</string>
+    <string name="section_signin">7. Oturum Açma ve Senkronizasyon</string>
+    <string name="section_captions">8. Altyazılar</string>
+    <string name="section_diagnostics">Tanılama ve Veri İşlemleri</string>
+
+    <string name="player_minimize">⌄ Küçült</string>
+    <string name="player_fullscreen">Tam ekran</string>
+    <string name="player_exit_fullscreen">Tam ekrandan çık</string>
+    <string name="player_captions">Altyazılar</string>
+    <string name="player_audio">Ses</string>
+    <string name="player_share">Paylaş</string>
+
+    <string name="common_on">Açık</string>
+    <string name="common_off">Kapalı</string>
+    <string name="common_cancel">İptal</string>
+    <string name="common_done">Bitti</string>
+</resources>

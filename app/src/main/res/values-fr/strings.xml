@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="nav_home">Accueil</string>
+    <string name="nav_search">Recherche</string>
+    <string name="nav_subscriptions">Abonnements</string>
+    <string name="nav_library">Bibliothèque</string>
+    <string name="nav_settings">Paramètres</string>
+
+    <string name="settings_title">Paramètres</string>
+    <string name="settings_filter_hint">Filtrer les paramètres…</string>
+    <string name="section_haramblur">1. Protection HaramBlur</string>
+    <string name="section_playback">2. Lecture, PiP et audio</string>
+    <string name="section_focus">3. Concentration et filtres du flux</string>
+    <string name="section_sponsorblock">4. SponsorBlock et sauvegarde</string>
+    <string name="section_history">5. Historique, file et données</string>
+    <string name="section_language">6. Langue et région</string>
+    <string name="section_signin">7. Connexion et synchronisation</string>
+    <string name="section_captions">8. Sous-titres</string>
+    <string name="section_diagnostics">Diagnostics et actions sur les données</string>
+
+    <string name="player_minimize">⌄ Réduire</string>
+    <string name="player_fullscreen">Plein écran</string>
+    <string name="player_exit_fullscreen">Quitter le plein écran</string>
+    <string name="player_captions">Sous-titres</string>
+    <string name="player_audio">Audio</string>
+    <string name="player_share">Partager</string>
+
+    <string name="common_on">Activé</string>
+    <string name="common_off">Désactivé</string>
+    <string name="common_cancel">Annuler</string>
+    <string name="common_done">Terminé</string>
+</resources>

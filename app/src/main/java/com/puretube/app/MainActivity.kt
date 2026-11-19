@@ -47,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -190,6 +191,11 @@ private fun PipVideoSurface(controller: MediaController?) {
 }
 
 class MainActivity : FragmentActivity() {
+
+    /** v2.1: legacy (pre-API 33) per-app locale wrap; no-op on 33+. */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(com.puretube.app.ui.LocaleHelper.wrap(newBase))
+    }
 
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(LocaleHelper.wrap(newBase))
@@ -504,7 +510,7 @@ private fun PureTubeNav(
                             }
                         },
                         icon = { Icon(Icons.Filled.Home, contentDescription = "Subscriptions") },
-                        label = { Text("Home") }
+                        label = { Text(stringResource(com.puretube.app.R.string.nav_home)) }
                     )
                     NavigationBarItem(
                         selected = currentRoute == "search",
@@ -525,7 +531,7 @@ private fun PureTubeNav(
                             }
                         },
                         icon = { Icon(Icons.Filled.Search, contentDescription = "Search") },
-                        label = { Text("Search") }
+                        label = { Text(stringResource(com.puretube.app.R.string.nav_search)) }
                     )
                     NavigationBarItem(
                         selected = currentRoute == "library",
@@ -536,7 +542,7 @@ private fun PureTubeNav(
                             }
                         },
                         icon = { Icon(Icons.Filled.VideoLibrary, contentDescription = "Library") },
-                        label = { Text("Library") }
+                        label = { Text(stringResource(com.puretube.app.R.string.nav_library)) }
                     )
                     NavigationBarItem(
                         selected = currentRoute == "settings",
@@ -547,7 +553,7 @@ private fun PureTubeNav(
                             }
                         },
                         icon = { Icon(Icons.Filled.Settings, contentDescription = "Settings") },
-                        label = { Text("Settings") }
+                        label = { Text(stringResource(com.puretube.app.R.string.nav_settings)) }
                     )
                 }
             }

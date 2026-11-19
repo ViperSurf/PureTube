@@ -55,6 +55,7 @@ import com.puretube.app.data.local.datastore.HistoryGroupMode
 import com.puretube.app.data.local.datastore.ThumbnailScale
 import com.puretube.app.domain.SectionResets
 import com.puretube.app.domain.SettingsJson
+import androidx.compose.ui.res.stringResource
 import com.puretube.app.ui.components.SettingRowWithTooltip
 import com.puretube.app.ui.theme.PureTextSecondary
 import kotlinx.coroutines.launch
@@ -65,6 +66,36 @@ private data class SettingRowDef(
     val tooltip: String,
     val content: @Composable () -> Unit
 )
+
+/**
+ * v2.1: section headers render from string resources so the chosen app
+ * language actually changes them. The internal section KEYS stay the
+ * English literals (grouping, reset and search all key off them).
+ */
+@Composable
+private fun localizedSectionTitle(section: String): String = when (section) {
+    "1. HaramBlur Protection" -> stringResource(com.puretube.app.R.string.section_haramblur)
+    "2. Playback, PiP & Audio" -> stringResource(com.puretube.app.R.string.section_playback)
+    "3. Focus & Feed Filters" -> stringResource(com.puretube.app.R.string.section_focus)
+    "4. SponsorBlock & Backup" -> stringResource(com.puretube.app.R.string.section_sponsorblock)
+    "5. History, Queue & Data" -> stringResource(com.puretube.app.R.string.section_history)
+    "6. Language & Region" -> stringResource(com.puretube.app.R.string.section_language)
+    "7. Sign-in & Sync" -> stringResource(com.puretube.app.R.string.section_signin)
+    "8. Captions" -> stringResource(com.puretube.app.R.string.section_captions)
+    else -> section
+}
+
+/** Friendly display name for the language picker (native names). */
+private fun appLanguageLabel(language: AppLanguage): String = when (language) {
+    AppLanguage.SYSTEM -> "System default"
+    AppLanguage.ENGLISH -> "English"
+    AppLanguage.ARABIC -> "العربية"
+    AppLanguage.SPANISH -> "Español"
+    AppLanguage.FRENCH -> "Français"
+    AppLanguage.TURKISH -> "Türkçe"
+    AppLanguage.URDU -> "اردو"
+    AppLanguage.GERMAN -> "English"
+}
 
 @Composable
 private fun CycleButton(label: String, onCycle: () -> Unit) {
@@ -217,9 +248,22 @@ fun FlatSettingsScreen() {
         scope.launch { app.preferences.update { it.copy(historyGroupMode = next) } }
     }
     fun cycleAppLanguage() {
-        val values = AppLanguage.entries
-        val next = values[(prefs.appLanguage.ordinal + 1) % values.size]
-        scope.launch { app.preferences.update { it.copy(appLanguage = next) } }
+        // v2.1: cycle only the OFFERED languages (German has no shipped
+        // strings and is no longer offered), apply the locale for real,
+        // and recreate the activity on pre-API 33 devices so the change
+        // is visible immediately (API 33+ recreates via LocaleManager).
+        val offered = com.puretube.app.domain.LanguageSupport.offeredLanguages
+        val current = offered.indexOf(prefs.appLanguage).let { if (it < 0) 0 else it }
+        val next = offered[(current + 1) % offered.size]
+        scope.launch {
+            app.preferences.update { it.copy(appLanguage = next) }
+            com.puretube.app.ui.LocaleHelper.apply(context, next)
+            if (android.os.Build.VERSION.SDK_INT <
+                android.os.Build.VERSION_CODES.TIRAMISU
+            ) {
+                (context as? android.app.Activity)?.recreate()
+            }
+        }
     }
     fun cycleContentCountry() {
         val values = ContentCountry.entries
@@ -758,8 +802,8 @@ fun FlatSettingsScreen() {
             }
         },
         SettingRowDef("6. Language & Region", "App Language",
-            "The language PureTube tries to use for its own screens. Applies after you fully close and reopen the app.") {
-            CycleButton(prefs.appLanguage.name) { cycleAppLanguage() }
+            "The language for PureTube's main screens — the bottom navigation, Settings headings and player buttons change immediately. Longer help text, tooltips and diagnostics stay in English. System default follows your phone's language.") {
+            CycleButton(appLanguageLabel(prefs.appLanguage)) { cycleAppLanguage() }
         },
         SettingRowDef("6. Language & Region", "Content Country",
             "The country PureTube asks the video service to localize results for, where the service supports it.") {
@@ -804,11 +848,11 @@ fun FlatSettingsScreen() {
     ) {
         item {
             Column {
-                Text("Settings", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text(stringResource(com.puretube.app.R.string.settings_title), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
-                    placeholder = { Text("Filter settings") },
+                    placeholder = { Text(stringResource(com.puretube.app.R.string.settings_filter_hint)) },
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -972,7 +1016,7 @@ fun FlatSettingsScreen() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        section,
+                        localizedSectionTitle(section),
                         color = Color.White,
                         fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
@@ -1004,7 +1048,7 @@ fun FlatSettingsScreen() {
                     .border(1.dp, com.puretube.app.ui.theme.PureBorder, RoundedCornerShape(10.dp))
                     .padding(12.dp)
             ) {
-                Text("7. Diagnostics & Data Actions", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Text("7. " + stringResource(com.puretube.app.R.string.section_diagnostics), color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(6.dp))
                 if (crashText.isBlank()) {
                     Text("No crash has been recorded on this device.", color = PureTextSecondary, fontSize = 13.sp)

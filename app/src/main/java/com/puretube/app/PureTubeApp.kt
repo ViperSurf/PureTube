@@ -193,7 +193,18 @@ class PureTubeApp : Application() {
 
         appScope.launch {
             currentPrefs = preferences.state.first()
-            preferences.state.collect { currentPrefs = it }
+            // v2.1: apply the app language for real (before v2.1 the pref
+            // was stored but never applied). LocaleManager persists the
+            // choice on API 33+; the helper also mirrors it for the
+            // legacy attachBaseContext wrap.
+            var appliedLanguage: com.puretube.app.data.local.datastore.AppLanguage? = null
+            preferences.state.collect {
+                currentPrefs = it
+                if (it.appLanguage != appliedLanguage) {
+                    appliedLanguage = it.appLanguage
+                    com.puretube.app.ui.LocaleHelper.apply(this@PureTubeApp, it.appLanguage)
+                }
+            }
         }
         appScope.launch {
             runCatching {
