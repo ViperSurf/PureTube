@@ -341,9 +341,9 @@ fun VideoPlayerScreen(
     val sampler = remember {
         VideoFrameSampler(app.haramBlurEngine, scope, app.samplerDiagnostics)
     }
-    val regions by sampler.activeBlurRegions.collectAsState()
+    // v2.1: the overlay collects the sampler's frame snapshots itself —
+    // the screen only needs the zero-flash gate state now.
     val initialCleared by sampler.isInitialFrameCleared.collectAsState()
-    val frameVersion by sampler.frameVersion.collectAsState()
     val account by app.accountRepository.state.collectAsState()
     val volumeNotice by app.volumeZeroMonitor.notice.collectAsState()
     val density = LocalDensity.current
@@ -1001,14 +1001,12 @@ fun VideoPlayerScreen(
                 }
             }
             VideoBlurMaskOverlay(
-                regions = regions,
+                sampler = sampler,
                 visualStyle = prefs.blurVisualStyle,
+                blurStrength = prefs.blurStrength,
                 initialFrameCleared = initialCleared,
                 zeroFlashEnabled = prefs.zeroFlashSafePreBlur,
-                videoRect = displayedRect,
-                pixelFrameProvider = { sampler.pixelFrame },
-                frameVersion = frameVersion,
-                onRegionsDrawn = { count -> sampler.noteOverlayRegionsDrawn(count) }
+                videoRect = displayedRect
             )
             volumeNotice?.let { msg ->
                 // v2.0 volume-zero rule notice: in-player text, not a popup.

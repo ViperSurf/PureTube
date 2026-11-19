@@ -9,18 +9,19 @@ import com.puretube.app.domain.BlazeFaceAnchors
 import com.puretube.app.domain.BlurScopeMath
 import com.puretube.app.domain.HaramBlurPolicy
 import com.puretube.app.domain.TileMath
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.tensorflow.lite.Interpreter
-import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
+import java.util.concurrent.Executors
 
 /** Observable HaramBlur engine state for the player pill + Settings block. */
 data class HaramBlurStatus(
@@ -54,8 +55,26 @@ data class HaramBlurStatus(
  */
 class HaramBlurEngine(private val context: Context) {
 
+    /**
+     * v2.1: EVERY inference (and interpreter creation) runs on this one
+     * dedicated thread. Root-cause fix for the frozen video blur: the
+     * v1.3–v2.0 engine created its interpreters with a TFLite GPU
+     * delegate and invoked them from whatever Dispatchers.Default thread
+     * the caller happened to be on. GPU delegates are thread-affine —
+     * an invoke from a different thread than the creating one can block
+     * inside native code instead of throwing, which wedged the video
+     * sampler's loop behind the engine mutex on its very first samples
+     * (no error was ever recorded because the call never returned),
+     * while short bursty thumbnail calls mostly squeaked through. The
+     * delegate is gone (BlazeFace at 128x128 is cheap on CPU) and all
+     * work is pinned to this thread, so the failure mode cannot recur.
+     */
+    private val engineDispatcher: CoroutineDispatcher =
+        Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "PureTubeHaramBlur").apply { isDaemon = true }
+        }.asCoroutineDispatcher()
+
     private val interpreterMutex = Mutex()
-    private var gpuDelegate: GpuDelegate? = null
     private var faceDetectorInterpreter: Interpreter? = null
     private var genderAttributeInterpreter: Interpreter? = null
     private var initAttempted = false
@@ -97,7 +116,7 @@ class HaramBlurEngine(private val context: Context) {
     }
 
     /** Loads the face model (and gender model if present). Never throws. */
-    suspend fun ensureInitialized(): Boolean = withContext(Dispatchers.Default) {
+    suspend fun ensureInitialized(): Boolean = withContext(engineDispatcher) {
         if (faceDetectorInterpreter != null) return@withContext true
         interpreterMutex.withLock {
             if (faceDetectorInterpreter != null) return@withLock true
@@ -116,18 +135,10 @@ class HaramBlurEngine(private val context: Context) {
         }
     }
 
-    /** GPU delegate first, CPU fallback — a broken GPU path must not kill detection. */
+    /** CPU-only interpreter (v2.1: no GPU delegate — see engineDispatcher note). */
     private fun loadInterpreter(assetPath: String): Interpreter {
         val mapped = loadModelMapped(assetPath)
-        val gpuOptions = Interpreter.Options().apply {
-            setNumThreads(2)
-            runCatching {
-                gpuDelegate = GpuDelegate()
-                addDelegate(gpuDelegate)
-            }
-        }
-        return runCatching { Interpreter(mapped, gpuOptions) }
-            .getOrElse { Interpreter(mapped, Interpreter.Options().apply { setNumThreads(2) }) }
+        return Interpreter(mapped, Interpreter.Options().apply { setNumThreads(4) })
     }
 
     /**
@@ -154,7 +165,7 @@ class HaramBlurEngine(private val context: Context) {
         sensitivity: Float,
         blurScope: BlurScope = BlurScope.FACE_ONLY,
         allowTiledRetry: Boolean = true
-    ): List<DetectedBlurRegion> = withContext(Dispatchers.Default) {
+    ): List<DetectedBlurRegion> = withContext(engineDispatcher) {
         if (!ensureInitialized()) return@withContext emptyList()
         val threshold = (1.0f - sensitivity).coerceIn(0.15f, 0.75f)
         var rawFaces = interpreterMutex.withLock {
@@ -259,7 +270,7 @@ class HaramBlurEngine(private val context: Context) {
      * public-domain test portrait and reports the region count or the
      * error. Never throws.
      */
-    suspend fun runTestDetection(): String = withContext(Dispatchers.Default) {
+    suspend fun runTestDetection(): String = withContext(engineDispatcher) {
         runCatching {
             if (!ensureInitialized()) {
                 return@withContext "Face model failed to load: " +

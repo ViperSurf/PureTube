@@ -9,8 +9,10 @@ import android.graphics.RectF
 import coil3.size.Size
 import coil3.transform.Transformation
 import com.puretube.app.data.local.datastore.BlurScope
+import com.puretube.app.data.local.datastore.BlurStrength
 import com.puretube.app.data.local.datastore.BlurTargetGender
 import com.puretube.app.data.local.datastore.BlurVisualStyle
+import com.puretube.app.domain.BlurStrengthMath
 
 /**
  * Zero-flash pre-blur: runs inside Coil's background pipeline BEFORE the bitmap
@@ -28,7 +30,9 @@ class HaramBlurCoilTransformation(
     private val channelName: String = "",
     private val exemptChannelKeys: Set<String> = emptySet(),
     /** v1.5: face-only vs face+body region scope. */
-    private val blurScope: BlurScope = BlurScope.FACE_ONLY
+    private val blurScope: BlurScope = BlurScope.FACE_ONLY,
+    /** v2.1: blur strength — drives the mosaic/frost divisors below. */
+    private val blurStrength: BlurStrength = BlurStrength.STRONG
 ) : Transformation() {
 
     // v1.3: the key carries a model revision token. Pre-v1.3 builds cached
@@ -36,9 +40,11 @@ class HaramBlurCoilTransformation(
     // returned zero regions); the new token invalidates those entries so a
     // face thumbnail is never served unblurred from the old cache. The
     // effective target (all-faces fallback when no gender model is loaded)
-    // is part of the key too.
+    // is part of the key too. v2.1: the token + strength are in the key —
+    // the old fixed-strength renders were too light and must not be
+    // served from cache after the strength change.
     override val cacheKey: String =
-        "haramblur_v15gender_${com.puretube.app.domain.HaramBlurPolicy.effectiveTarget(targetGender, engine.hasGenderModel)}_${visualStyle}_${sensitivity}_${blurIntensity}_${isManuallyPeeked}_${blurScope}_exempt${com.puretube.app.domain.HaramBlurExemptions.normalizeChannelId(channelId)}_${exemptChannelKeys.hashCode()}"
+        "haramblur_v21_${com.puretube.app.domain.HaramBlurPolicy.effectiveTarget(targetGender, engine.hasGenderModel)}_${visualStyle}_${sensitivity}_${blurStrength}_${isManuallyPeeked}_${blurScope}_exempt${com.puretube.app.domain.HaramBlurExemptions.normalizeChannelId(channelId)}_${exemptChannelKeys.hashCode()}"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
         if (isManuallyPeeked) return input
@@ -77,7 +83,9 @@ class HaramBlurCoilTransformation(
                     canvas.drawRoundRect(RectF(targetRect), 12f, 12f, paint)
                 }
                 BlurVisualStyle.PIXELATE_MOSAIC -> {
-                    val blockDivisor = (blurIntensity / 3f).toInt().coerceIn(6, 24)
+                    // v2.1: divisor from the strength setting (smaller =
+                    // coarser blocks); the legacy intensity slider fine-tunes.
+                    val blockDivisor = BlurStrengthMath.thumbnailMosaicDivisor(blurStrength)
                     val tinyW = (targetRect.width() / blockDivisor).coerceAtLeast(2)
                     val tinyH = (targetRect.height() / blockDivisor).coerceAtLeast(2)
                     val subCrop = Bitmap.createBitmap(
@@ -88,7 +96,7 @@ class HaramBlurCoilTransformation(
                     canvas.drawBitmap(pixelated, null, targetRect, paint)
                 }
                 BlurVisualStyle.FROSTED_GAUSSIAN -> {
-                    val scaleDown = (blurIntensity / 2.2f).toInt().coerceIn(8, 28)
+                    val scaleDown = BlurStrengthMath.thumbnailFrostDivisor(blurStrength)
                     val tinyW = (targetRect.width() / scaleDown).coerceAtLeast(2)
                     val tinyH = (targetRect.height() / scaleDown).coerceAtLeast(2)
                     val subCrop = Bitmap.createBitmap(
@@ -97,6 +105,13 @@ class HaramBlurCoilTransformation(
                     val downscaled = Bitmap.createScaledBitmap(subCrop, tinyW, tinyH, true)
                     paint.isFilterBitmap = true
                     canvas.drawBitmap(downscaled, null, targetRect, paint)
+                    // v2.1: strength-scaled frost tint on top — downscale
+                    // alone left faces recognisable at the old values.
+                    paint.color = android.graphics.Color.argb(
+                        BlurStrengthMath.frostTintAlpha(blurStrength), 158, 158, 158
+                    )
+                    canvas.drawRect(RectF(targetRect), paint)
+                    paint.color = android.graphics.Color.WHITE
                 }
             }
         }

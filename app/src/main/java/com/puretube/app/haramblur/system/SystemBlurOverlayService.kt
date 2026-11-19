@@ -156,16 +156,28 @@ class SystemBlurOverlayService : Service() {
                         }
                         image.close()
                         if (motion && rowPadding == 0) {
+                            val shieldPrefs = (application as? com.puretube.app.PureTubeApp)
+                                ?.currentPrefs
                             val regions = haramBlurEngine.detectRegionsToBlur(
                                 sourceBitmap = reusableBitmap,
                                 targetGender = BlurTargetGender.FEMALE_ONLY,
                                 sensitivity = 0.65f,
                                 // v1.5: the shield honours the same Blur Scope setting.
-                                blurScope = (application as? com.puretube.app.PureTubeApp)
-                                    ?.currentPrefs?.blurScope
+                                blurScope = shieldPrefs?.blurScope
                                     ?: com.puretube.app.data.local.datastore.BlurScope.FACE_ONLY
                             )
-                            overlayView?.updateRegions(regions)
+                            // v2.1: the shield honours Blur Strength (mask
+                            // opacity) and the FULL_SCREEN detection mode.
+                            overlayView?.updateRegions(
+                                newRegions = regions,
+                                fullScreen = shieldPrefs?.blurDetectionMode ==
+                                    com.puretube.app.data.local.datastore.BlurDetectionMode.FULL_SCREEN &&
+                                    regions.isNotEmpty(),
+                                maskAlpha = com.puretube.app.domain.BlurStrengthMath.shieldMaskAlpha(
+                                    shieldPrefs?.blurStrength
+                                        ?: com.puretube.app.data.local.datastore.BlurStrength.STRONG
+                                )
+                            )
                         }
                     } catch (e: Exception) {
                         runCatching { image.close() }
@@ -191,6 +203,8 @@ class SystemBlurOverlayService : Service() {
     private class ClickThroughBlurOverlayView(context: Context) : View(context) {
         @Volatile
         private var regions: List<DetectedBlurRegion> = emptyList()
+        @Volatile
+        private var fullScreen: Boolean = false
         private val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#F4141414")
             style = Paint.Style.FILL
@@ -201,13 +215,23 @@ class SystemBlurOverlayService : Service() {
             strokeWidth = 2f
         }
 
-        fun updateRegions(newRegions: List<DetectedBlurRegion>) {
+        fun updateRegions(
+            newRegions: List<DetectedBlurRegion>,
+            fullScreen: Boolean = false,
+            maskAlpha: Int = 0xF4
+        ) {
             regions = newRegions
+            this.fullScreen = fullScreen
+            maskPaint.color = Color.argb(maskAlpha, 0x14, 0x14, 0x14)
             postInvalidateOnAnimation()
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
+            if (fullScreen) {
+                canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), maskPaint)
+                return
+            }
             for (region in regions) {
                 val rect = RectF(
                     region.normalizedRect.left * width,

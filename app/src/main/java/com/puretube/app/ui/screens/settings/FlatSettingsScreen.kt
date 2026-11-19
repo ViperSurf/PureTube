@@ -185,6 +185,16 @@ fun FlatSettingsScreen() {
         val next = values[(prefs.blurScope.ordinal + 1) % values.size]
         scope.launch { app.preferences.update { it.copy(blurScope = next) } }
     }
+    fun cycleBlurMode() {
+        val values = com.puretube.app.data.local.datastore.BlurDetectionMode.entries
+        val next = values[(prefs.blurDetectionMode.ordinal + 1) % values.size]
+        scope.launch { app.preferences.update { it.copy(blurDetectionMode = next) } }
+    }
+    fun cycleBlurStrength() {
+        val values = com.puretube.app.data.local.datastore.BlurStrength.entries
+        val next = values[(prefs.blurStrength.ordinal + 1) % values.size]
+        scope.launch { app.preferences.update { it.copy(blurStrength = next) } }
+    }
     fun cycleFeedLayout() {
         val values = FeedLayout.entries
         val next = values[(prefs.feedLayout.ordinal + 1) % values.size]
@@ -275,6 +285,14 @@ fun FlatSettingsScreen() {
         SettingRowDef("1. HaramBlur Protection", "Blur Scope",
             "FACE_ONLY (default) blurs just the face/head box. FACE_AND_BODY widens that box into an approximated person region (about 1.6x wider, extending about 2.5 face-heights down) — it is a geometric estimate from the face box, not a separate body detection, so it can over- or under-cover. Applies to thumbnails, video and the System Shield.") {
             CycleButton(prefs.blurScope.name) { cycleBlurScope() }
+        },
+        SettingRowDef("1. HaramBlur Protection", "Detection Mode",
+            "SMART (default) blurs only the detected regions. FULL SCREEN pixelates the ENTIRE video frame whenever anything is detected, and keeps it covered until the frame has been clear for a moment — use it if targeted boxes ever miss or lag. Applies to video and the System Shield; thumbnails stay targeted.") {
+            CycleButton(prefs.blurDetectionMode.name) { cycleBlurMode() }
+        },
+        SettingRowDef("1. HaramBlur Protection", "Blur Strength",
+            "How hard the blur hides what's under it: mosaic block size for Pixelate, tint opacity for Frosted, mask opacity for the Shield. STRONG (default) makes faces unrecognisable; the old fixed rendering was about LIGHT, which is why faces showed through. Applies to thumbnails, video and the Shield.") {
+            CycleButton(prefs.blurStrength.name) { cycleBlurStrength() }
         },
         SettingRowDef("1. HaramBlur Protection", "Detection Sensitivity",
             "Higher (Strict) sensitivity blurs even partially visible or uncertain faces; lower (Relaxed) sensitivity only blurs high-confidence matches.") {
@@ -840,6 +858,14 @@ fun FlatSettingsScreen() {
                 )
                 Text(
                     "Regions drawn by overlay: ${samplerDiag.overlayRegionsDrawn}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Sample sequence: sampled ${samplerDiag.sampledSequence} / drawn ${samplerDiag.drawnSequence}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Last sample duration: ${samplerDiag.lastSampleDurationMs} ms",
                     color = PureTextSecondary, fontSize = 13.sp
                 )
                 samplerDiag.lastError?.let { err ->

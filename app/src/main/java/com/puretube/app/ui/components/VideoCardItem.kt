@@ -479,7 +479,8 @@ fun buildProtectedThumbnailRequest(
                 channelId = channelId,
                 channelName = channelName,
                 exemptChannelKeys = exemptChannelKeys,
-                blurScope = prefs.blurScope
+                blurScope = prefs.blurScope,
+                blurStrength = prefs.blurStrength
             )
         )
     }

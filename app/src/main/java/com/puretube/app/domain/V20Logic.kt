@@ -100,11 +100,15 @@ object VideoRectMath {
 }
 
 // ---------------------------------------------------------------------------
-// Volume-zero rule (Part A.1)
+// Volume-zero rule (Part A.1, extended v2.1)
 //
-// STREAM_MUSIC at 0 while a video plays -> PAUSE. Still 0 after the
-// configured delay -> STOP. Volume rising cancels the pending stop but
-// NEVER resumes playback: there is deliberately no RESUME action.
+// STREAM_MUSIC at 0 while a video plays -> the configured zero action:
+// PAUSE (default), a 5/10/15s REWIND, or REWIND + PAUSE. Still 0 after
+// the configured delay -> STOP. Volume rising cancels the pending stop.
+// RESUME exists in the machine but is reachable ONLY when the user has
+// explicitly enabled "Resume when volume returns" AND this rule did the
+// pausing — with the option off (default) there is no resume path, which
+// was Bara's original v2.0 rule.
 // ---------------------------------------------------------------------------
 
 object VolumeZeroRule {
@@ -112,19 +116,37 @@ object VolumeZeroRule {
     const val NEVER_STOP_MS = 0L
 
     enum class Phase { INACTIVE, ZERO_PENDING_STOP, STOPPED }
-    enum class Action { NONE, PAUSE, STOP }
+    enum class Action { NONE, PAUSE, STOP, REWIND, REWIND_AND_PAUSE, RESUME }
 
     data class State(
         val phase: Phase = Phase.INACTIVE,
-        val zeroSinceMs: Long = 0L
+        val zeroSinceMs: Long = 0L,
+        /** v2.1: this rule paused playback (gates the optional RESUME). */
+        val pausedByRule: Boolean = false,
+        /** v2.1: rewind amount (ms) attached to the most recent REWIND action. */
+        val lastRewindMs: Long = 0L
     )
 
     fun reset(): State = State()
+
+    /** Rewind milliseconds for a zero action; 0 for non-rewind actions. */
+    fun rewindMsFor(action: com.puretube.app.data.local.datastore.VolumeZeroAction): Long =
+        when (action) {
+            com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_5 -> 5_000L
+            com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_10 -> 10_000L
+            com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_15 -> 15_000L
+            com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_AND_PAUSE -> 10_000L
+            com.puretube.app.data.local.datastore.VolumeZeroAction.PAUSE_ONLY -> 0L
+        }
 
     /**
      * One sample of the world. [hasMedia] = a video is loaded (player not
      * idle). STOPPED is terminal for the current media item; the caller
      * resets the state when a new item loads.
+     *
+     * v2.1 parameters (defaulted so the v2.0 call shape still works):
+     * [zeroAction] picks pause vs rewind behaviour; [resumeOnReturn] is
+     * the ONLY way a RESUME action can be produced.
      */
     fun onSample(
         state: State,
@@ -133,21 +155,49 @@ object VolumeZeroRule {
         hasMedia: Boolean,
         enabled: Boolean,
         stopDelayMs: Long,
-        nowMs: Long
+        nowMs: Long,
+        zeroAction: com.puretube.app.data.local.datastore.VolumeZeroAction =
+            com.puretube.app.data.local.datastore.VolumeZeroAction.PAUSE_ONLY,
+        resumeOnReturn: Boolean = false
     ): Pair<State, Action> {
         if (state.phase == Phase.STOPPED) return state to Action.NONE
         if (!enabled || !hasMedia) return State() to Action.NONE
         if (!volumeIsZero) {
-            // Timer cancels; playback is NEVER auto-resumed by this rule.
-            return State() to Action.NONE
+            // Timer cancels. Resume ONLY when the option is on, this rule
+            // did the pausing, and playback is still paused.
+            return if (resumeOnReturn && state.pausedByRule && !isPlaying) {
+                State() to Action.RESUME
+            } else {
+                State() to Action.NONE
+            }
         }
         return when (state.phase) {
-            Phase.INACTIVE ->
-                State(Phase.ZERO_PENDING_STOP, nowMs) to
-                    (if (isPlaying) Action.PAUSE else Action.NONE)
+            Phase.INACTIVE -> {
+                if (!isPlaying) {
+                    // Already paused (by the user): just arm the stop timer.
+                    State(Phase.ZERO_PENDING_STOP, nowMs) to Action.NONE
+                } else {
+                    when (zeroAction) {
+                        com.puretube.app.data.local.datastore.VolumeZeroAction.PAUSE_ONLY ->
+                            State(Phase.ZERO_PENDING_STOP, nowMs, pausedByRule = true) to
+                                Action.PAUSE
+                        com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_AND_PAUSE ->
+                            State(
+                                Phase.ZERO_PENDING_STOP, nowMs,
+                                pausedByRule = true, lastRewindMs = rewindMsFor(zeroAction)
+                            ) to Action.REWIND_AND_PAUSE
+                        else ->
+                            State(
+                                Phase.ZERO_PENDING_STOP, nowMs,
+                                lastRewindMs = rewindMsFor(zeroAction)
+                            ) to Action.REWIND
+                    }
+                }
+            }
             Phase.ZERO_PENDING_STOP -> {
                 if (stopDelayMs > NEVER_STOP_MS && nowMs - state.zeroSinceMs >= stopDelayMs) {
-                    State(Phase.STOPPED, state.zeroSinceMs) to Action.STOP
+                    State(Phase.STOPPED, state.zeroSinceMs, pausedByRule = state.pausedByRule) to
+                        Action.STOP
                 } else {
                     state to Action.NONE
                 }

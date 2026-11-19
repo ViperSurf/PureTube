@@ -3,114 +3,130 @@ package com.puretube.app.haramblur.video
 import android.graphics.Bitmap
 import android.view.TextureView
 import com.puretube.app.data.local.datastore.AppPreferencesState
+import com.puretube.app.data.local.datastore.BlurDetectionMode
+import com.puretube.app.data.local.datastore.BlurStrength
 import com.puretube.app.data.local.datastore.ProtectedMediaType
 import com.puretube.app.data.local.datastore.ProtectionScope
+import com.puretube.app.domain.BlurStrengthMath
+import com.puretube.app.domain.FullScreenBlurHold
 import com.puretube.app.haramblur.engine.BoundingBoxTracker
 import com.puretube.app.haramblur.engine.DetectedBlurRegion
 import com.puretube.app.haramblur.engine.HaramBlurEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.Executors
 
 /**
- * Sampler diagnostics (v1.4), surfaced in Settings near the HaramBlur
- * status block: how many frames were actually sampled, how bright the
- * last sampled frame was (0-255 mean), how many regions the last
- * detection produced, and the last silent failure, if any.
+ * Sampler diagnostics, surfaced in Settings near the HaramBlur status
+ * block. v2.1 adds the sequence pair — [sampledSequence] counts every
+ * published frame snapshot, [drawnSequence] is the newest sequence the
+ * overlay actually drew. During healthy playback both climb together at
+ * the sampler cadence; a freeze is now visible as numbers (sampled
+ * advancing / drawn stuck, or both stuck with a growing sample age).
  */
 data class SamplerDiagnostics(
     val framesSampled: Long = 0L,
     val lastFrameBrightness: Int = -1,
     val lastDetectionCount: Int = -1,
     val lastError: String? = null,
-    /** v1.5: which detection pass produced the last faces — "full", "tiled", "upscale", "none". */
+    /** Which detection pass produced the last faces — "full", "tiled", "upscale", "none". */
     val lastPassType: String = "none",
-    /** v1.5: cumulative regions detected since sampling started. */
+    /** Cumulative regions detected since sampling started. */
     val totalDetections: Long = 0L,
-    /** v2.0: is the sampling loop alive right now. */
+    /** Is the sampling loop alive right now. */
     val samplerRunning: Boolean = false,
-    /** v2.0: pixel size of the TextureView surface being sampled (0 = none yet). */
+    /** Pixel size of the TextureView surface being sampled (0 = none yet). */
     val surfaceWidth: Int = 0,
     val surfaceHeight: Int = 0,
-    /** v2.0: regions the overlay actually drew on its last pass — separates
-     *  "not detecting" from "detecting but not drawing". */
-    val overlayRegionsDrawn: Int = 0
+    /** Regions the overlay actually drew on its last pass. */
+    val overlayRegionsDrawn: Int = 0,
+    /** v2.1: sequence of the newest published frame snapshot. */
+    val sampledSequence: Long = 0L,
+    /** v2.1: newest snapshot sequence the overlay reports having drawn. */
+    val drawnSequence: Long = 0L,
+    /** v2.1: wall-clock duration of the last sample (capture + detection). */
+    val lastSampleDurationMs: Long = 0L
 )
 
 /**
- * Decoupled ~12 FPS (83 ms) live-video sampler, v1.4 rewrite.
+ * One atomic frame snapshot (v2.1). Everything the overlay needs for one
+ * redraw travels together in a single immutable value:
+ * - [sequence]: strictly increasing; the overlay keys its Canvas to it,
+ *   so EVERY published sample forces a redraw — a stale draw is
+ *   impossible without the diagnostics sequence pair showing it.
+ * - [pixelFrame]: a private COPY of the low-res sampled frame at the
+ *   active blur strength's resolution (never the sampler's mutable
+ *   working buffer — the v2.0 overlay drew from a bitmap that was being
+ *   overwritten in place while it read it).
+ * - [fullScreenActive]: FULL_SCREEN detection mode + hysteresis — the
+ *   whole frame gets the treatment while this is true.
+ */
+data class BlurFrameSnapshot(
+    val sequence: Long = 0L,
+    val regions: List<DetectedBlurRegion> = emptyList(),
+    val pixelFrame: Bitmap? = null,
+    val fullScreenActive: Boolean = false,
+    val sampledAtMs: Long = 0L
+)
+
+/**
+ * Live-video sampler, v2.1 restructure.
  *
- * ROOT CAUSE of the v1.3 in-video blur failure: the sampler captured
- * frames with PixelCopy.request(SurfaceView, …). The player's video
- * surface is a SurfaceView whose pixels are composited by the
- * hardware/SurfaceFlinger path; PixelCopy against that surface
- * routinely reported failure (or produced black frames) on real
- * devices, and every failure was swallowed by the defensive
- * runCatching design — so thumbnails blurred (Coil path, works) while
- * live video silently never produced a single detection.
+ * WHY v2.0 STILL FROZE (field report: blur painted once on a face at a
+ * layout event — minimize/resize — then stayed there): the chain had
+ * three structural weaknesses, and the fix addresses all three.
+ * 1. The engine invoked GPU-delegate TFLite interpreters from arbitrary
+ *    pool threads (thread-affine native code can block instead of
+ *    throwing; the loop wedged silently — see HaramBlurEngine). The
+ *    engine now pins all inference to one dedicated CPU thread, and
+ *    this sampler additionally time-boxes each detection call so a slow
+ *    call degrades one sample instead of killing the loop.
+ * 2. Frame capture (TextureView.getBitmap) ran on a pooled background
+ *    thread; SurfaceTexture frames are produced against the UI thread's
+ *    choreography. Capture now hops to the main thread for the copy
+ *    only (a 640x360 readback), then returns here for detection.
+ * 3. The overlay consumed three separate flows plus an in-place-mutated
+ *    bitmap through composable parameters. Now the sampler publishes
+ *    ONE StateFlow of immutable [BlurFrameSnapshot]s and the overlay
+ *    collects it directly — the state chain has a single link.
  *
- * v1.4: the player renders into a TextureView (Player.setVideoTextureView)
- * and the sampler copies frames with TextureView.getBitmap() into the
- * fixed buffer on its own coroutine — NO PixelCopy anywhere.
- * TextureView keeps its frames in a regular texture the app can read
- * back, which is exactly what a sampler needs.
- *
- * v1.5: the buffer is 640x360 (was 320x180) so small faces survive the
- * downsample, and the engine's tiled second pass runs at a reduced
- * cadence: only after two consecutive full-frame passes found nothing
- * (roughly every 3rd sample), with the 450 ms hysteresis tracker
- * bridging the gaps so boxes don't flicker between passes.
- *
- * Defensive by design (kept from v1.1 hardening):
- * - The whole sampling loop is wrapped in runCatching; any failure
- *   degrades to "no regions" instead of crashing the player, and is
- *   recorded in [diagnostics] instead of vanishing silently.
- * - Sampling only runs while the player reports it is playing (or
- *   until the first frame has been cleared by the zero-flash gate).
- * - A preference kill switch (videoFrameSamplingEnabled) disables sampling.
- * - A channel-exemption provider skips sampling entirely for exempt
- *   channels.
+ * The loop itself runs on its own single-thread dispatcher, at ~12 FPS.
+ * The tiled small-face pass keeps its v1.5 cadence (only after two
+ * consecutive empty full-frame passes), with the 450 ms box tracker
+ * bridging gaps.
  */
 class VideoFrameSampler(
     private val haramBlurEngine: HaramBlurEngine,
     private val scope: CoroutineScope,
     private val diagnosticsFlow: MutableStateFlow<SamplerDiagnostics>? = null
 ) {
+    private val samplerDispatcher = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "PureTubeSampler").apply { isDaemon = true }
+    }.asCoroutineDispatcher()
+
     private val sampleBufferBitmap: Bitmap? = runCatching {
         Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
     }.getOrNull()
 
-    /**
-     * v2.0: low-resolution copy of the latest sampled frame (128x72).
-     * The overlay upscales regions of THIS bitmap with filtering off to
-     * draw REAL pixelated patches of the actual video frame — the old
-     * overlay only ever drew flat translucent boxes, which is a large
-     * part of why in-video blur "did nothing" visually. Mutated in
-     * place; [frameVersion] is the recomposition/redraw signal.
-     */
-    private val pixelBufferBitmap: Bitmap? = runCatching {
-        Bitmap.createBitmap(PIXEL_FRAME_WIDTH, PIXEL_FRAME_HEIGHT, Bitmap.Config.ARGB_8888)
-    }.getOrNull()
-    private val pixelCanvas: android.graphics.Canvas? =
-        pixelBufferBitmap?.let { android.graphics.Canvas(it) }
+    /** Working pixel buffer, resized to the active strength (recreated on change). */
+    private var pixelBufferBitmap: Bitmap? = null
+    private var pixelCanvas: android.graphics.Canvas? = null
+    private var pixelStrength: BlurStrength? = null
     private val pixelPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
 
-    @Volatile
-    var pixelFrame: Bitmap? = null
-        private set
+    private val _frameState = MutableStateFlow(BlurFrameSnapshot())
+    val frameState: StateFlow<BlurFrameSnapshot> = _frameState
 
-    private val _frameVersion = MutableStateFlow(0L)
-    val frameVersion: StateFlow<Long> = _frameVersion
-
-    /** Consecutive full-frame passes that found nothing (drives the tiled cadence). */
-    @Volatile private var consecutiveEmptyFullPasses: Int = 0
-    private val tracker = BoundingBoxTracker(holdMs = 450L, alpha = 0.65f)
-
+    // Kept for the player screen's zero-flash gate + any other readers.
     private val _activeBlurRegions = MutableStateFlow<List<DetectedBlurRegion>>(emptyList())
     val activeBlurRegions: StateFlow<List<DetectedBlurRegion>> = _activeBlurRegions
 
@@ -120,6 +136,11 @@ class VideoFrameSampler(
     private val _diagnostics = MutableStateFlow(SamplerDiagnostics())
     val diagnostics: StateFlow<SamplerDiagnostics> = _diagnostics
 
+    @Volatile private var sequence: Long = 0L
+    @Volatile private var lastDetectionAtMs: Long = 0L
+    @Volatile private var consecutiveEmptyFullPasses: Int = 0
+    private val tracker = BoundingBoxTracker(holdMs = 450L, alpha = 0.65f)
+
     @Volatile private var samplingJob: Job? = null
     @Volatile private var released = false
 
@@ -127,6 +148,35 @@ class VideoFrameSampler(
         val next = transform(_diagnostics.value)
         _diagnostics.value = next
         diagnosticsFlow?.value = next
+    }
+
+    /** Publishes one atomic snapshot (the ONLY way overlay state changes). */
+    private fun publishSnapshot(
+        regions: List<DetectedBlurRegion>,
+        pixelFrameCopy: Bitmap?,
+        fullScreenActive: Boolean
+    ) {
+        sequence += 1
+        _frameState.value = BlurFrameSnapshot(
+            sequence = sequence,
+            regions = regions,
+            pixelFrame = pixelFrameCopy,
+            fullScreenActive = fullScreenActive,
+            sampledAtMs = System.currentTimeMillis()
+        )
+        _activeBlurRegions.value = regions
+        publishDiagnostics { it.copy(sampledSequence = sequence) }
+    }
+
+    private fun ensurePixelBuffer(strength: BlurStrength): Bitmap? {
+        if (pixelBufferBitmap != null && pixelStrength == strength) return pixelBufferBitmap
+        val (w, h) = BlurStrengthMath.pixelFrameSize(strength)
+        pixelBufferBitmap = runCatching {
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        }.getOrNull()
+        pixelCanvas = pixelBufferBitmap?.let { android.graphics.Canvas(it) }
+        pixelStrength = strength
+        return pixelBufferBitmap
     }
 
     fun startSampling(
@@ -138,6 +188,8 @@ class VideoFrameSampler(
         stopSampling()
         if (released) return
         runCatching { tracker.reset() }
+        lastDetectionAtMs = 0L
+        consecutiveEmptyFullPasses = 0
         _isInitialFrameCleared.value = false
         publishDiagnostics {
             it.copy(
@@ -146,34 +198,26 @@ class VideoFrameSampler(
                 surfaceHeight = runCatching { textureView.height }.getOrDefault(0)
             )
         }
-        samplingJob = scope.launch(Dispatchers.Default) {
+        samplingJob = scope.launch(samplerDispatcher) {
             while (isActive) {
+                val sampleStartMs = System.currentTimeMillis()
+                var publishedEmpty = false
+                var sampleError: String? = null
                 runCatching {
                     val prefs = prefsProvider()
-                    // Kill switch: sampling fully disabled by preference.
-                    if (!prefs.videoFrameSamplingEnabled) {
-                        _activeBlurRegions.value = emptyList()
-                        _isInitialFrameCleared.value = true
-                        delay(500L)
-                        return@runCatching
-                    }
                     val videoProtectionActive =
-                        (prefs.protectionScope == ProtectionScope.IN_APP_ONLY ||
-                            prefs.protectionScope == ProtectionScope.BOTH) &&
+                        prefs.videoFrameSamplingEnabled &&
+                            (prefs.protectionScope == ProtectionScope.IN_APP_ONLY ||
+                                prefs.protectionScope == ProtectionScope.BOTH) &&
                             (prefs.protectedMediaType == ProtectedMediaType.VIDEOS_ONLY ||
                                 prefs.protectedMediaType == ProtectedMediaType.BOTH_IMAGES_AND_VIDEOS)
 
-                    if (!videoProtectionActive) {
-                        _activeBlurRegions.value = emptyList()
+                    if (!videoProtectionActive ||
+                        runCatching { isExemptProvider() }.getOrDefault(false)
+                    ) {
+                        publishSnapshot(emptyList(), _frameState.value.pixelFrame, false)
                         _isInitialFrameCleared.value = true
-                        delay(500L)
-                        return@runCatching
-                    }
-
-                    // Channel exemption: never sample (or blur) this channel.
-                    if (runCatching { isExemptProvider() }.getOrDefault(false)) {
-                        _activeBlurRegions.value = emptyList()
-                        _isInitialFrameCleared.value = true
+                        publishedEmpty = true
                         delay(500L)
                         return@runCatching
                     }
@@ -184,12 +228,20 @@ class VideoFrameSampler(
                     // first frame is cleared we still try so the gate can open.
                     if (available && (playing || !_isInitialFrameCleared.value)) {
                         val buffer = sampleBufferBitmap
-                        val copied = if (buffer != null) copyFrame(textureView, buffer) else false
+                        val copied = if (buffer != null) {
+                            // Capture on the main thread: the SurfaceTexture's
+                            // frames are produced against UI choreography.
+                            withContext(Dispatchers.Main.immediate) {
+                                copyFrame(textureView, buffer)
+                            }
+                        } else {
+                            false
+                        }
                         if (copied && buffer != null) {
-                            // Publish the low-res pixel frame for the
-                            // overlay's real pixelated patches.
-                            runCatching {
-                                val pb = pixelBufferBitmap
+                            // Publish the low-res pixel frame (at the active
+                            // strength's resolution) for real pixel patches.
+                            val pixelCopy = runCatching {
+                                val pb = ensurePixelBuffer(prefs.blurStrength)
                                 val pc = pixelCanvas
                                 if (pb != null && pc != null) {
                                     pc.drawBitmap(
@@ -197,26 +249,31 @@ class VideoFrameSampler(
                                         android.graphics.Rect(0, 0, pb.width, pb.height),
                                         pixelPaint
                                     )
-                                    pixelFrame = pb
-                                    _frameVersion.value = _frameVersion.value + 1
+                                    pb.copy(Bitmap.Config.ARGB_8888, false)
+                                } else {
+                                    null
                                 }
-                            }
+                            }.getOrNull()
                             val brightness = meanBrightness(buffer)
                             // Tiled pass cadence: only after 2 consecutive
                             // empty full-frame passes (about every 3rd sample).
                             val allowTiled = consecutiveEmptyFullPasses >= 2
-                            val detected = runCatching {
-                                haramBlurEngine.detectRegionsToBlur(
-                                    sourceBitmap = buffer,
-                                    targetGender = prefs.blurTargetGender,
-                                    sensitivity = prefs.detectionSensitivity,
-                                    blurScope = prefs.blurScope,
-                                    allowTiledRetry = allowTiled
-                                )
-                            }.getOrElse { e ->
-                                publishDiagnostics {
-                                    it.copy(lastError = "${e::class.simpleName}: ${e.message ?: "detection failed"}")
+                            val detected = withTimeoutOrNull(DETECTION_TIMEOUT_MS) {
+                                runCatching {
+                                    haramBlurEngine.detectRegionsToBlur(
+                                        sourceBitmap = buffer,
+                                        targetGender = prefs.blurTargetGender,
+                                        sensitivity = prefs.detectionSensitivity,
+                                        blurScope = prefs.blurScope,
+                                        allowTiledRetry = allowTiled
+                                    )
+                                }.getOrElse { e ->
+                                    sampleError = "${e::class.simpleName}: " +
+                                        (e.message ?: "detection failed")
+                                    emptyList()
                                 }
+                            } ?: run {
+                                sampleError = "Detection timed out (>2.5s) — sample skipped"
                                 emptyList()
                             }
                             val passType = haramBlurEngine.lastPassType
@@ -225,18 +282,29 @@ class VideoFrameSampler(
                                 passType == "tiled" || passType == "upscale" -> 0
                                 else -> consecutiveEmptyFullPasses + 1
                             }
-                            _activeBlurRegions.value = runCatching {
+                            if (detected.isNotEmpty()) {
+                                lastDetectionAtMs = System.currentTimeMillis()
+                            }
+                            val tracked = runCatching {
                                 tracker.onDetections(detected)
                             }.getOrDefault(emptyList())
+                            val fullScreen = prefs.blurDetectionMode == BlurDetectionMode.FULL_SCREEN &&
+                                FullScreenBlurHold.isActive(
+                                    lastDetectionAtMs, System.currentTimeMillis(),
+                                    hasDetectionsNow = tracked.isNotEmpty()
+                                )
+                            publishSnapshot(tracked, pixelCopy, fullScreen)
                             _isInitialFrameCleared.value = true
                             publishDiagnostics {
                                 it.copy(
                                     framesSampled = it.framesSampled + 1,
                                     lastFrameBrightness = brightness,
                                     lastDetectionCount = detected.size,
-                                    lastError = null,
+                                    lastError = sampleError,
                                     lastPassType = passType,
-                                    totalDetections = it.totalDetections + detected.size
+                                    totalDetections = it.totalDetections + detected.size,
+                                    lastSampleDurationMs =
+                                        System.currentTimeMillis() - sampleStartMs
                                 )
                             }
                         }
@@ -246,7 +314,7 @@ class VideoFrameSampler(
                         it.copy(lastError = "${e::class.simpleName}: ${e.message ?: "sampling failed"}")
                     }
                 }
-                delay(83L)
+                if (!publishedEmpty) delay(83L)
             }
         }
     }
@@ -266,10 +334,13 @@ class VideoFrameSampler(
         }
     }
 
-    /** v2.0: the overlay reports how many regions it actually drew. */
-    fun noteOverlayRegionsDrawn(count: Int) {
-        if (_diagnostics.value.overlayRegionsDrawn != count) {
-            publishDiagnostics { it.copy(overlayRegionsDrawn = count) }
+    /** The overlay reports the newest snapshot sequence it actually drew. */
+    fun noteOverlayDrawn(drawnSeq: Long, regionsDrawn: Int) {
+        val current = _diagnostics.value
+        if (current.drawnSequence != drawnSeq || current.overlayRegionsDrawn != regionsDrawn) {
+            publishDiagnostics {
+                it.copy(drawnSequence = drawnSeq, overlayRegionsDrawn = regionsDrawn)
+            }
         }
     }
 
@@ -280,8 +351,8 @@ class VideoFrameSampler(
 
     /**
      * Copies the TextureView's current frame into [buffer] (640x360).
-     * TextureView.getBitmap(Bitmap) scales into the supplied bitmap.
-     * Returns false on any failure — silent no-op by design.
+     * MUST be called on the main thread (v2.1). Returns false on any
+     * failure — silent no-op by design.
      */
     private fun copyFrame(textureView: TextureView, buffer: Bitmap): Boolean =
         runCatching {
@@ -292,12 +363,6 @@ class VideoFrameSampler(
             }
             false
         }
-
-    companion object {
-        /** Pixel-frame size: small enough that upscaling it is visibly blocky. */
-        const val PIXEL_FRAME_WIDTH = 128
-        const val PIXEL_FRAME_HEIGHT = 72
-    }
 
     /** Mean brightness 0-255 over a strided pixel sample of the buffer. */
     private fun meanBrightness(bitmap: Bitmap): Int = runCatching {
@@ -319,4 +384,9 @@ class VideoFrameSampler(
         }
         if (count == 0) -1 else (sum / count).toInt()
     }.getOrDefault(-1)
+
+    companion object {
+        /** A single detection call may not stall the loop longer than this. */
+        const val DETECTION_TIMEOUT_MS = 2_500L
+    }
 }

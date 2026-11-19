@@ -15,9 +15,10 @@ object SectionResets {
     const val SECTION_5 = "5. History, Queue & Data"
     const val SECTION_6 = "6. Language & Region"
     const val SECTION_7 = "7. Diagnostics & Data Actions"
+    const val SECTION_8 = "8. Captions"
 
     val sectionsInOrder = listOf(
-        SECTION_1, SECTION_2, SECTION_3, SECTION_4, SECTION_5, SECTION_6, SECTION_7
+        SECTION_1, SECTION_2, SECTION_3, SECTION_4, SECTION_5, SECTION_6, SECTION_7, SECTION_8
     )
 
     fun reset(state: AppPreferencesState, section: String): AppPreferencesState {
@@ -29,6 +30,8 @@ object SectionResets {
                 protectedMediaType = d.protectedMediaType,
                 blurVisualStyle = d.blurVisualStyle,
                 blurScope = d.blurScope,
+                blurDetectionMode = d.blurDetectionMode,
+                blurStrength = d.blurStrength,
                 detectionSensitivity = d.detectionSensitivity,
                 blurIntensityRadius = d.blurIntensityRadius,
                 zeroFlashSafePreBlur = d.zeroFlashSafePreBlur,
@@ -64,6 +67,9 @@ object SectionResets {
                 swipeBrightnessVolumeControls = d.swipeBrightnessVolumeControls,
                 pauseOnVolumeZero = d.pauseOnVolumeZero,
                 volumeZeroStopSeconds = d.volumeZeroStopSeconds,
+                volumeZeroAction = d.volumeZeroAction,
+                resumeOnVolumeReturn = d.resumeOnVolumeReturn,
+                showTitleInFullscreen = d.showTitleInFullscreen,
                 videoAspectMode = d.videoAspectMode
             )
             SECTION_3 -> state.copy(
@@ -104,12 +110,22 @@ object SectionResets {
                 resetQueueOnExit = d.resetQueueOnExit,
                 autoQueueShortOnly = d.autoQueueShortOnly,
                 autoQueueMaxMinutes = d.autoQueueMaxMinutes,
-                feedUpdateThresholdMinutes = d.feedUpdateThresholdMinutes
+                feedUpdateThresholdMinutes = d.feedUpdateThresholdMinutes,
+                historyLayout = d.historyLayout,
+                historyThumbnailScale = d.historyThumbnailScale,
+                historyGridColumns = d.historyGridColumns
             )
             SECTION_6 -> state.copy(
                 appLanguage = d.appLanguage,
                 contentCountry = d.contentCountry,
                 preferredAudioLanguage = d.preferredAudioLanguage
+            )
+            SECTION_8 -> state.copy(
+                captionLanguageCode = d.captionLanguageCode,
+                captionTextSize = d.captionTextSize,
+                captionTextColor = d.captionTextColor,
+                captionBackground = d.captionBackground,
+                captionBold = d.captionBold
             )
             else -> state // Section 7 holds actions/diagnostics, no preferences.
         }

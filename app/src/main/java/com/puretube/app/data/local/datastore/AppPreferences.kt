@@ -40,6 +40,25 @@ enum class BlurScope { FACE_ONLY, FACE_AND_BODY }
 /** Player aspect mode (v2.0): FIT letterboxes, ZOOM centre-crops to fill, STRETCH distorts to fill. */
 enum class VideoAspectMode { FIT, ZOOM, STRETCH }
 
+/** HaramBlur detection mode (v2.1): SMART blurs only detected regions;
+ *  FULL_SCREEN pixelates the whole frame while anything is detected. */
+enum class BlurDetectionMode { SMART, FULL_SCREEN }
+
+/** HaramBlur strength (v2.1): drives mosaic block size / frost opacity everywhere. */
+enum class BlurStrength { LIGHT, MEDIUM, STRONG, MAXIMUM }
+
+/** What happens when the media volume hits zero (v2.1). */
+enum class VolumeZeroAction { PAUSE_ONLY, REWIND_5, REWIND_10, REWIND_15, REWIND_AND_PAUSE }
+
+/** Caption text size (v2.1). */
+enum class CaptionTextSize { SMALL, MEDIUM, LARGE, EXTRA_LARGE }
+
+/** Caption text colour (v2.1). */
+enum class CaptionTextColor { WHITE, YELLOW, CYAN }
+
+/** Caption background (v2.1). */
+enum class CaptionBackground { NONE, TRANSLUCENT, BLACK }
+
 /** App language; SYSTEM follows the phone. Applies on restart. */
 enum class AppLanguage(val code: String) {
     SYSTEM("SYSTEM"), ENGLISH("en"), ARABIC("ar"), SPANISH("es"),
@@ -67,6 +86,11 @@ data class AppPreferencesState(
     val blurVisualStyle: BlurVisualStyle = BlurVisualStyle.FROSTED_GAUSSIAN,
     /** v1.5: FACE_ONLY blurs the face/head box; FACE_AND_BODY approximates the whole person. */
     val blurScope: BlurScope = BlurScope.FACE_ONLY,
+    /** v2.1: SMART targeted regions vs FULL_SCREEN whole-frame pixelation on any detection. */
+    val blurDetectionMode: BlurDetectionMode = BlurDetectionMode.SMART,
+    /** v2.1: blur strength — mosaic block size / frost opacity. STRONG is the default:
+     *  the old fixed rendering was too light and faces showed through. */
+    val blurStrength: BlurStrength = BlurStrength.STRONG,
     val detectionSensitivity: Float = 0.65f,
     val blurIntensityRadius: Float = 28f,
     val zeroFlashSafePreBlur: Boolean = true,
@@ -110,6 +134,13 @@ data class AppPreferencesState(
     val pauseOnVolumeZero: Boolean = true,
     /** v2.0: if volume stays zero this many seconds, stop playback. 0 = never stop. */
     val volumeZeroStopSeconds: Int = 30,
+    /** v2.1: what the volume-zero rule does first — pause only, rewind, or both. */
+    val volumeZeroAction: VolumeZeroAction = VolumeZeroAction.PAUSE_ONLY,
+    /** v2.1: when ON, playback resumes by itself when volume returns after a
+     *  volume-zero pause. OFF (default) keeps Bara's rule: never auto-resume. */
+    val resumeOnVolumeReturn: Boolean = false,
+    /** v2.1: show the title/author overlay in landscape fullscreen. */
+    val showTitleInFullscreen: Boolean = true,
     /** v2.0: how the video picture fits its container. FIT is the undistorted default. */
     val videoAspectMode: VideoAspectMode = VideoAspectMode.FIT,
     // Section 3: Focus, Shorts & Feed Filters
@@ -156,7 +187,20 @@ data class AppPreferencesState(
     // Section 6: Language & Region (v1.1)
     val appLanguage: AppLanguage = AppLanguage.SYSTEM,
     val contentCountry: ContentCountry = ContentCountry.SYSTEM,
-    val preferredAudioLanguage: PreferredAudioLanguage = PreferredAudioLanguage.ORIGINAL
+    val preferredAudioLanguage: PreferredAudioLanguage = PreferredAudioLanguage.ORIGINAL,
+    // Section 5b: History display (v2.1) — SEPARATE from the feed display prefs:
+    // history rows default to compact list rows, not the huge shared feed cards.
+    val historyLayout: FeedLayout = FeedLayout.LIST,
+    val historyThumbnailScale: ThumbnailScale = ThumbnailScale.COMPACT,
+    val historyGridColumns: Int = 2,
+    // Section 8: Captions (v2.1)
+    /** Last caption language chosen in the player ("" = captions off). Applied
+     *  automatically when a video offers that language. */
+    val captionLanguageCode: String = "",
+    val captionTextSize: CaptionTextSize = CaptionTextSize.MEDIUM,
+    val captionTextColor: CaptionTextColor = CaptionTextColor.WHITE,
+    val captionBackground: CaptionBackground = CaptionBackground.TRANSLUCENT,
+    val captionBold: Boolean = false
 )
 
 private val Context.dataStore by preferencesDataStore(name = "puretube_preferences")
@@ -240,6 +284,19 @@ class AppPreferences(private val context: Context) {
         val appLanguage = stringPreferencesKey("app_language")
         val contentCountry = stringPreferencesKey("content_country")
         val preferredAudioLanguage = stringPreferencesKey("preferred_audio_language")
+        val blurDetectionMode = stringPreferencesKey("blur_detection_mode")
+        val blurStrength = stringPreferencesKey("blur_strength")
+        val volumeZeroAction = stringPreferencesKey("volume_zero_action")
+        val resumeOnVolumeReturn = booleanPreferencesKey("resume_on_volume_return")
+        val showTitleInFullscreen = booleanPreferencesKey("show_title_in_fullscreen")
+        val historyLayout = stringPreferencesKey("history_layout")
+        val historyThumbnailScale = stringPreferencesKey("history_thumbnail_scale")
+        val historyGridColumns = intPreferencesKey("history_grid_columns")
+        val captionLanguageCode = stringPreferencesKey("caption_language_code")
+        val captionTextSize = stringPreferencesKey("caption_text_size")
+        val captionTextColor = stringPreferencesKey("caption_text_color")
+        val captionBackground = stringPreferencesKey("caption_background")
+        val captionBold = booleanPreferencesKey("caption_bold")
         val feedLastFetch = stringPreferencesKey("feed_last_fetch_map")
     }
 
@@ -327,7 +384,20 @@ class AppPreferences(private val context: Context) {
             feedUpdateThresholdMinutes = this[Keys.feedUpdateThresholdMinutes] ?: d.feedUpdateThresholdMinutes,
             appLanguage = enumOr(Keys.appLanguage, AppLanguage.entries.toTypedArray(), d.appLanguage),
             contentCountry = enumOr(Keys.contentCountry, ContentCountry.entries.toTypedArray(), d.contentCountry),
-            preferredAudioLanguage = enumOr(Keys.preferredAudioLanguage, PreferredAudioLanguage.entries.toTypedArray(), d.preferredAudioLanguage)
+            preferredAudioLanguage = enumOr(Keys.preferredAudioLanguage, PreferredAudioLanguage.entries.toTypedArray(), d.preferredAudioLanguage),
+            blurDetectionMode = enumOr(Keys.blurDetectionMode, BlurDetectionMode.entries.toTypedArray(), d.blurDetectionMode),
+            blurStrength = enumOr(Keys.blurStrength, BlurStrength.entries.toTypedArray(), d.blurStrength),
+            volumeZeroAction = enumOr(Keys.volumeZeroAction, VolumeZeroAction.entries.toTypedArray(), d.volumeZeroAction),
+            resumeOnVolumeReturn = this[Keys.resumeOnVolumeReturn] ?: d.resumeOnVolumeReturn,
+            showTitleInFullscreen = this[Keys.showTitleInFullscreen] ?: d.showTitleInFullscreen,
+            historyLayout = enumOr(Keys.historyLayout, FeedLayout.entries.toTypedArray(), d.historyLayout),
+            historyThumbnailScale = enumOr(Keys.historyThumbnailScale, ThumbnailScale.entries.toTypedArray(), d.historyThumbnailScale),
+            historyGridColumns = this[Keys.historyGridColumns] ?: d.historyGridColumns,
+            captionLanguageCode = this[Keys.captionLanguageCode] ?: d.captionLanguageCode,
+            captionTextSize = enumOr(Keys.captionTextSize, CaptionTextSize.entries.toTypedArray(), d.captionTextSize),
+            captionTextColor = enumOr(Keys.captionTextColor, CaptionTextColor.entries.toTypedArray(), d.captionTextColor),
+            captionBackground = enumOr(Keys.captionBackground, CaptionBackground.entries.toTypedArray(), d.captionBackground),
+            captionBold = this[Keys.captionBold] ?: d.captionBold
         )
     }
 
@@ -408,6 +478,19 @@ class AppPreferences(private val context: Context) {
         this[Keys.appLanguage] = next.appLanguage.name
         this[Keys.contentCountry] = next.contentCountry.name
         this[Keys.preferredAudioLanguage] = next.preferredAudioLanguage.name
+        this[Keys.blurDetectionMode] = next.blurDetectionMode.name
+        this[Keys.blurStrength] = next.blurStrength.name
+        this[Keys.volumeZeroAction] = next.volumeZeroAction.name
+        this[Keys.resumeOnVolumeReturn] = next.resumeOnVolumeReturn
+        this[Keys.showTitleInFullscreen] = next.showTitleInFullscreen
+        this[Keys.historyLayout] = next.historyLayout.name
+        this[Keys.historyThumbnailScale] = next.historyThumbnailScale.name
+        this[Keys.historyGridColumns] = next.historyGridColumns
+        this[Keys.captionLanguageCode] = next.captionLanguageCode
+        this[Keys.captionTextSize] = next.captionTextSize.name
+        this[Keys.captionTextColor] = next.captionTextColor.name
+        this[Keys.captionBackground] = next.captionBackground.name
+        this[Keys.captionBold] = next.captionBold
     }
 
     /** Synchronous mirror for early readers (locale, playback service). */
