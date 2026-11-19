@@ -89,26 +89,35 @@ fun FloatingMiniWindow(
             detectTapGestures(onTap = { onExpand() })
         }
         .pointerInput(screenWidthDp) {
-            val expandThresholdPx = 90.dp.toPx()
-            detectTransformGestures(
-                onGesture = { _, pan, zoom, _ ->
-                    if (zoom != 1f) {
-                        widthDp = FloatingWindowMath.resizedWidthDp(
-                            currentDp = widthDp,
-                            zoom = zoom,
-                            screenWidthDp = screenWidthDp
-                        )
-                    } else {
-                        offsetX += pan.x
-                        offsetY += pan.y
-                        totalUpDragPx += pan.y
-                    }
-                },
-                onGestureEnd = {
-                    if (totalUpDragPx < -expandThresholdPx) onExpand()
-                    totalUpDragPx = 0f
+            detectTransformGestures { _, pan, zoom, _ ->
+                if (zoom != 1f) {
+                    widthDp = FloatingWindowMath.resizedWidthDp(
+                        currentDp = widthDp,
+                        zoom = zoom,
+                        screenWidthDp = screenWidthDp
+                    )
+                } else {
+                    offsetX += pan.x
+                    offsetY += pan.y
+                    totalUpDragPx += pan.y
                 }
-            )
+            }
+        }
+        .pointerInput(Unit) {
+            // Gesture-end watcher: when the last finger lifts after a
+            // drag-up past ~90 dp, expand to the full player.
+            val expandThresholdPx = 90.dp.toPx()
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    if (event.changes.isNotEmpty() &&
+                        event.changes.all { !it.pressed }
+                    ) {
+                        if (totalUpDragPx < -expandThresholdPx) onExpand()
+                        totalUpDragPx = 0f
+                    }
+                }
+            }
         }
 
     Box(modifier = modifier.fillMaxSize()) {

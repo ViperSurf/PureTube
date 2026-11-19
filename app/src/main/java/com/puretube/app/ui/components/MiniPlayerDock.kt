@@ -3,6 +3,7 @@ package com.puretube.app.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -81,7 +82,7 @@ fun MiniPlayerDock(
                 // v1.5: drag UP on the dock expands back to the full player.
                 var total = 0f
                 val threshold = 60.dp.toPx()
-                androidx.compose.foundation.gestures.detectVerticalDragGestures(
+                detectVerticalDragGestures(
                     onDragStart = { total = 0f },
                     onVerticalDrag = { _, amount -> total += amount },
                     onDragEnd = {

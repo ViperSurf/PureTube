@@ -251,9 +251,7 @@ class HaramBlurEngine(private val context: Context) {
                 .getOrDefault(emptyList())
             localFaces.forEach { found.add(TileMath.mapToFullFrame(tile, it)) }
         }
-        return BlurBoxMath.nonMaxSuppression(
-            found.map { it to 0.5f }, iouThreshold = 0.35f
-        )
+        return BlurBoxMath.nonMaxSuppression(found, iouThreshold = 0.35f)
     }
 
     /**

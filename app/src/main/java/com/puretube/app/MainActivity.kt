@@ -430,7 +430,7 @@ private fun PureTubeNav(
     // staying frozen at whatever they were on entry.
     LaunchedEffect(inPictureInPicture, playerState.isPlaying, playerState.isMuted) {
         if (inPictureInPicture) {
-            val act = activity ?: return@LaunchedEffect
+            val act = activity as? FragmentActivity ?: return@LaunchedEffect
             runCatching {
                 act.setPictureInPictureParams(
                     act.buildAndEnterPipParams(
