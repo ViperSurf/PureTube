@@ -229,6 +229,16 @@ fun FlatSettingsScreen() {
     }
     fun likesLabel(value: Int?): String = value?.toString() ?: "Any"
 
+    fun cycleControlsVisibility() {
+        val values = com.puretube.app.data.local.datastore.ControlsVisibility.entries
+        val next = values[(prefs.controlsVisibility.ordinal + 1) % values.size]
+        scope.launch { app.preferences.update { it.copy(controlsVisibility = next) } }
+    }
+    fun cycleLikesDisplay() {
+        val values = com.puretube.app.data.local.datastore.LikesDisplay.entries
+        val next = values[(prefs.likesDisplay.ordinal + 1) % values.size]
+        scope.launch { app.preferences.update { it.copy(likesDisplay = next) } }
+    }
     fun cycleStartTab() {
         val values = DefaultStartTab.entries
         val next = values[(prefs.defaultStartTab.ordinal + 1) % values.size]
@@ -506,6 +516,42 @@ fun FlatSettingsScreen() {
             "The sleep timer length preselected when you open a video. When it runs out, playback pauses and shows Sleep timer ended.") {
             CycleButton(if (prefs.sleepTimerDefaultMinutes <= 0) "Off" else "${prefs.sleepTimerDefaultMinutes} min") { cycleSleepDefault() }
         },
+        SettingRowDef("2. Playback, PiP & Audio", "Player Controls Visibility",
+            "Auto-hide fades the player controls (chips + seek bar) after about 3 seconds while a video is playing; a tap brings them back. Always visible keeps them on screen.") {
+            CycleButton(prefs.controlsVisibility.name) { cycleControlsVisibility() }
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "Auto-Rotate Player",
+            "When on, the player screen rotates freely with your phone (including landscape). When off, the player stays locked to portrait. Other screens are never affected.") {
+            Switch(
+                checked = prefs.autoRotatePlayer,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(autoRotatePlayer = v) } } }
+            )
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "Unmute Raises Volume",
+            "If your phone's media volume is all the way down, tapping Unmute also raises it to about 40% so unmuting actually makes sound. The player's own mute state is unchanged either way.") {
+            Switch(
+                checked = prefs.unmuteRaisesVolume,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(unmuteRaisesVolume = v) } } }
+            )
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "Keep Video Pinned While Scrolling",
+            "The video, seek bar and control chips stay fixed at the top while the title, description and comments scroll underneath. Turn off for the classic single scrolling page.") {
+            Switch(
+                checked = prefs.keepVideoPinnedWhileScrolling,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(keepVideoPinnedWhileScrolling = v) } } }
+            )
+        },
+        SettingRowDef("3. Focus & Feed Filters", "Double-Tap Search Resets",
+            "Tapping the Search tab while you are already on Search clears the query, results, filter and scroll position for a fresh start.") {
+            Switch(
+                checked = prefs.doubleTapSearchResets,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(doubleTapSearchResets = v) } } }
+            )
+        },
+        SettingRowDef("4. SponsorBlock & Backup", "Likes Display",
+            "How the player shows like and dislike counts from Return YouTube Dislike: raw numbers, a percentage liked, or both.") {
+            CycleButton(prefs.likesDisplay.name) { cycleLikesDisplay() }
+        },
         SettingRowDef("2. Playback, PiP & Audio", "Video Frame Sampling",
             "The live-video scanner that checks playing frames 12 times a second. Turning this off disables live-video blur scanning (thumbnails still scan) and can help if the player ever feels heavy.") {
             Switch(
@@ -708,6 +754,25 @@ fun FlatSettingsScreen() {
                 hbStatus.lastError?.let { err ->
                     Text("Last load error: $err", color = Color(0xFFFF8080), fontSize = 12.sp)
                 }
+                // v1.4 sampler diagnostics (TextureView capture path).
+                val samplerDiag by app.samplerDiagnostics.collectAsState()
+                Spacer(modifier = Modifier.height(6.dp))
+                Text("Video sampler", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    "Frames sampled: ${samplerDiag.framesSampled}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Last frame brightness: ${if (samplerDiag.lastFrameBrightness >= 0) "${samplerDiag.lastFrameBrightness} / 255" else "—"}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Last detection count: ${if (samplerDiag.lastDetectionCount >= 0) samplerDiag.lastDetectionCount.toString() else "—"}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                samplerDiag.lastError?.let { err ->
+                    Text("Last sampler error: $err", color = Color(0xFFFF8080), fontSize = 12.sp)
+                }
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
@@ -719,6 +784,48 @@ fun FlatSettingsScreen() {
                 }
                 if (hbTestResult.isNotBlank()) {
                     Text(hbTestResult, color = PureTextSecondary, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+        }
+        item(key = "haramblur-exemptions") {
+            val allFilters by app.database.blocklistDao().observeAll()
+                .collectAsState(initial = emptyList())
+            val exemptions = allFilters.filter {
+                it.filterType == com.puretube.app.data.local.entity.FilterType.EXEMPT_CHANNEL
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, com.puretube.app.ui.theme.PureBorder, RoundedCornerShape(10.dp))
+                    .padding(12.dp)
+            ) {
+                Text(
+                    "HaramBlur channel exemptions",
+                    color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium
+                )
+                Text(
+                    "These channels are never blurred (thumbnails or video). Add one from a video's \"Don't blur this channel\" button or the channel screen.",
+                    color = PureTextSecondary, fontSize = 12.sp, lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                if (exemptions.isEmpty()) {
+                    Text("No exemptions yet.", color = PureTextSecondary, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp))
+                }
+                exemptions.forEach { entry ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 6.dp)
+                    ) {
+                        Text(
+                            entry.pattern, color = Color.White, fontSize = 13.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        androidx.compose.material3.TextButton(onClick = {
+                            scope.launch { runCatching { app.database.blocklistDao().delete(entry.id) } }
+                        }) { Text("Remove", fontSize = 12.sp) }
+                    }
                 }
             }
         }

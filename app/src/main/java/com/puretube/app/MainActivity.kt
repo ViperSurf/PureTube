@@ -194,6 +194,11 @@ class MainActivity : FragmentActivity() {
                 mediaController = controller
                 if (controller != null) {
                     app.playerController.attach(controller)
+                    // v1.4: unmute-raises-volume wiring.
+                    app.playerController.audioManager =
+                        getSystemService(android.media.AudioManager::class.java)
+                    app.playerController.unmuteRaisesVolumeProvider =
+                        { app.currentPrefs.unmuteRaisesVolume }
                     app.playerController.setSpeed(app.currentPrefs.defaultPlaybackSpeed)
                     app.playerController.setMono(app.currentPrefs.monoAudioMergeEnabled)
                     app.playerController.setNormalization(app.currentPrefs.audioNormalizationEnabled)
@@ -325,12 +330,31 @@ private fun PureTubeNav(
     val prefs by app.preferences.state.collectAsState(initial = app.currentPrefs)
     var floatingOpen by remember { mutableStateOf(false) }
     var dockProgress by remember { mutableFloatStateOf(0f) }
+    var dockPositionMs by remember { mutableStateOf(0L) }
+    var dockDurationMs by remember { mutableStateOf(0L) }
+
+    // v1.4 rotation: on the player route, Auto allows full-sensor
+    // rotation and Locked pins portrait; leaving the player restores
+    // UNSPECIFIED so the rest of the app behaves normally.
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
+    LaunchedEffect(currentRoute, prefs.autoRotatePlayer) {
+        val act = activity ?: return@LaunchedEffect
+        act.requestedOrientation = when {
+            currentRoute?.startsWith("player") == true && prefs.autoRotatePlayer ->
+                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+            currentRoute?.startsWith("player") == true ->
+                android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            else -> android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     LaunchedEffect(controller, currentRoute) {
         while (true) {
             if (controller != null && currentRoute?.startsWith("player") != true) {
                 val duration = runCatching { controller.duration }.getOrDefault(0L)
                 val position = runCatching { controller.currentPosition }.getOrDefault(0L)
+                dockPositionMs = position.coerceAtLeast(0L)
+                dockDurationMs = duration.coerceAtLeast(0L)
                 dockProgress = if (duration > 0) {
                     (position.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
                 } else 0f
@@ -359,6 +383,11 @@ private fun PureTubeNav(
                             onToggleMute = { app.playerController.toggleMute() },
                             queueCount = queueItems.size,
                             progressFraction = dockProgress,
+                            positionMs = dockPositionMs,
+                            durationMs = dockDurationMs,
+                            onSeek = { target ->
+                                runCatching { controller?.seekTo(target) }
+                            },
                             onQueueClick = { navController.navigate("queue") },
                             onFloatClick = { floatingOpen = true },
                             onOpenPlayer = {
@@ -390,9 +419,19 @@ private fun PureTubeNav(
                     NavigationBarItem(
                         selected = currentRoute == "search",
                         onClick = {
-                            navController.navigate("search") {
-                                launchSingleTop = true
-                                restoreState = true
+                            // v1.4: tapping Search while ALREADY on Search
+                            // resets the session (pref-gated) instead of
+                            // navigating nowhere.
+                            if (com.puretube.app.domain.SearchResetPolicy.shouldReset(
+                                    currentRoute, prefs.doubleTapSearchResets
+                                )
+                            ) {
+                                app.searchSession.reset()
+                            } else {
+                                navController.navigate("search") {
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
                             }
                         },
                         icon = { Icon(Icons.Filled.Search, contentDescription = "Search") },

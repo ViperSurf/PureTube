@@ -40,6 +40,14 @@ import com.puretube.app.ui.theme.PureBorder
  * live progress, mute (RED when muted), Queue (N) badge button, a
  * float-to-window button, and close. Tapping the title reopens the player.
  */
+private fun fmtDockMs(ms: Long): String {
+    val totalSec = (ms / 1000).coerceAtLeast(0)
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val sec = totalSec % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
+}
+
 @Composable
 fun MiniPlayerDock(
     state: PlayerUiState,
@@ -51,7 +59,10 @@ fun MiniPlayerDock(
     onQueueClick: (() -> Unit)? = null,
     queueCount: Int = 0,
     onFloatClick: (() -> Unit)? = null,
-    progressFraction: Float = 0f
+    progressFraction: Float = 0f,
+    positionMs: Long = 0L,
+    durationMs: Long = 0L,
+    onSeek: ((Long) -> Unit)? = null
 ) {
     if (state.title.isBlank()) return
     Column(
@@ -122,7 +133,23 @@ fun MiniPlayerDock(
                 )
             }
         }
-        if (progressFraction > 0f) {
+        if (onSeek != null && durationMs > 0) {
+            // v1.4: live seek slider with position / duration.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(fmtDockMs(positionMs), color = Color(0xFFAAAAAA), fontSize = 10.sp)
+                androidx.compose.material3.Slider(
+                    value = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f),
+                    onValueChange = { frac -> onSeek((frac * durationMs).toLong()) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 8.dp)
+                )
+                Text(fmtDockMs(durationMs), color = Color(0xFFAAAAAA), fontSize = 10.sp)
+            }
+        } else if (progressFraction > 0f) {
             LinearProgressIndicator(
                 progress = { progressFraction.coerceIn(0f, 1f) },
                 modifier = Modifier

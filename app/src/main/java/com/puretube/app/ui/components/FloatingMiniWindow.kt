@@ -67,6 +67,18 @@ fun FloatingMiniWindow(
     if (state.title.isBlank() || controller == null) return
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+    // v1.4: live position for the compact seek slider.
+    var positionMs by remember { mutableStateOf(0L) }
+    var durationMs by remember { mutableStateOf(0L) }
+    androidx.compose.runtime.LaunchedEffect(controller) {
+        while (true) {
+            runCatching {
+                positionMs = controller.currentPosition.coerceAtLeast(0L)
+                durationMs = controller.duration.coerceAtLeast(0L)
+            }
+            kotlinx.coroutines.delay(500L)
+        }
+    }
     // S / M / L sizes (v1.3)
     var sizeIndex by remember { mutableStateOf(1) }
     val widths = listOf(140.dp, 184.dp, 264.dp)
@@ -124,6 +136,32 @@ fun FloatingMiniWindow(
                         .aspectRatio(16f / 9f)
                         .clickable { onExpand() }
                 )
+            }
+            if (durationMs > 0) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp)
+                ) {
+                    Text(
+                        text = "${positionMs / 1000 / 60}:${"%02d".format(positionMs / 1000 % 60)}",
+                        color = Color(0xFFAAAAAA), fontSize = 9.sp
+                    )
+                    androidx.compose.material3.Slider(
+                        value = (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f),
+                        onValueChange = { frac ->
+                            runCatching { controller.seekTo((frac * durationMs).toLong()) }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 4.dp)
+                    )
+                    Text(
+                        text = "${durationMs / 1000 / 60}:${"%02d".format(durationMs / 1000 % 60)}",
+                        color = Color(0xFFAAAAAA), fontSize = 9.sp
+                    )
+                }
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,

@@ -1,14 +1,19 @@
 package com.puretube.app.ui.screens.player
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.view.SurfaceView
+import android.content.Intent
+import android.media.AudioManager
+import android.net.Uri
+import android.view.TextureView
 import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,11 +27,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,13 +48,19 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -53,21 +69,27 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.MimeTypes
 import androidx.media3.session.MediaController
-import androidx.media3.ui.PlayerView
 import com.puretube.app.MainActivity
 import com.puretube.app.PureTubeApp
 import com.puretube.app.data.WatchLaterHelper
+import com.puretube.app.data.local.datastore.ControlsVisibility
 import com.puretube.app.data.local.entity.FilterType
 import com.puretube.app.data.local.entity.SubscriptionEntity
 import com.puretube.app.data.local.entity.WatchProgressEntity
 import com.puretube.app.data.remote.extractor.FeedItem
 import com.puretube.app.data.remote.extractor.ResolvedVideoStream
+import com.puretube.app.data.remote.ryd.DislikeStats
 import com.puretube.app.data.remote.sponsorblock.SponsorSegment
 import coil3.compose.AsyncImage
 import com.puretube.app.domain.AudioOnlySurface
 import com.puretube.app.domain.CommentFilters
 import com.puretube.app.domain.CommentItem
+import com.puretube.app.domain.DescriptionFormatter
+import com.puretube.app.domain.HaramBlurExemptions
+import com.puretube.app.domain.LikesDisplayMath
+import com.puretube.app.domain.PlayerControlsPolicy
 import com.puretube.app.domain.SponsorRewindSuppression
+import com.puretube.app.domain.SwipeControlMath
 import com.puretube.app.haramblur.video.VideoBlurMaskOverlay
 import com.puretube.app.haramblur.video.VideoFrameSampler
 import com.puretube.app.playback.CastRouterController
@@ -82,14 +104,30 @@ import kotlinx.coroutines.launch
 private enum class StreamKind { ADAPTIVE, PROGRESSIVE, AUDIO_ONLY }
 
 /**
- * Full player (v1.1): MediaController-backed PlayerView, HaramBlur mask
- * overlay, HUD pills, hold-to-2x, SponsorBlock auto-skip with rewind
- * suppression, play queue + autoplay, sleep timer, collapsed comments.
+ * Full player (v1.4).
  *
- * Crash-hardened: the player opens even when extraction fails, the media
- * controller connects late, models are absent, or a stream URL errors —
- * every failure becomes an in-player message with a fallback chain
- * (adaptive -> progressive -> audio-only) before any error is shown.
+ * VIDEO SURFACE: a plain TextureView hosted in an AndroidView, bound with
+ * MediaController.setVideoTextureView(...) — PlayerView is gone. The
+ * HaramBlur sampler reads frames back with TextureView.getBitmap()
+ * (PixelCopy on the old SurfaceView silently produced no frames).
+ *
+ * GESTURE MAP (video area, all coexisting):
+ * - Single tap: toggle OUR controls (chips + seek).
+ * - Double-tap left/right half: seek -/+ the configured seconds.
+ * - Press-and-hold (>220 ms, away from the edges): 2x fast-forward.
+ * - Vertical drag on the LEFT third: window brightness.
+ * - Vertical drag on the RIGHT third: STREAM_MUSIC volume.
+ *   (Both show a small centre-top % indicator while dragging. The centre
+ *   third is left free so vertical drags there do nothing accidental.)
+ * - Drag HANDLE PILL above the title, pulled down past ~120 dp: minimize.
+ *   Swipe-down-to-minimize ON the video itself is deliberately NOT used:
+ *   vertical drags on the video already mean brightness/volume, so the
+ *   handle is the one unambiguous minimize gesture.
+ *
+ * LAYOUT: with keepVideoPinnedWhileScrolling on (default), the video +
+ * seek + chips are a fixed header and everything below scrolls on its
+ * own; off, the whole page is one scroll column (the v1.3 layout).
+ * HaramBlur status lives ONLY in Settings now — no status text here.
  */
 private fun fmtMs(ms: Long): String {
     val totalSec = (ms / 1000).coerceAtLeast(0)
@@ -142,6 +180,7 @@ fun VideoPlayerScreen(
     val prefs by app.preferences.state.collectAsState(initial = app.currentPrefs)
     val playerState by app.playerController.state.collectAsState()
     val queue by app.playerController.queue.collectAsState()
+    val exemptKeys by app.exemptChannelKeys.collectAsState()
 
     var status by remember(videoId) { mutableStateOf("Connecting to playback service…") }
     var connectRetries by remember(videoId) { mutableStateOf(0) }
@@ -150,37 +189,66 @@ fun VideoPlayerScreen(
     var skippedPill by remember(videoId) { mutableStateOf<Pair<SponsorSegment, Long>?>(null) }
     var skippedUuids by remember(videoId) { mutableStateOf<Set<String>>(emptySet()) }
     var suppressedUuids by remember(videoId) { mutableStateOf<Set<String>>(emptySet()) }
-    var dislikeText by remember(videoId) { mutableStateOf("") }
+    var dislikeStats by remember(videoId) { mutableStateOf<DislikeStats?>(null) }
     var displayTitle by remember(videoId) { mutableStateOf("") }
     var showSpeedSlider by remember { mutableStateOf(false) }
     var holdingFastForward by remember { mutableStateOf(false) }
-    var playerViewRef by remember { mutableStateOf<PlayerView?>(null) }
+    var textureViewRef by remember { mutableStateOf<TextureView?>(null) }
     var currentKind by remember(videoId) { mutableStateOf<StreamKind?>(null) }
     var fatalError by remember(videoId) { mutableStateOf<String?>(null) }
     var comments by remember(videoId) { mutableStateOf<List<CommentItem>>(emptyList()) }
     var commentsStatus by remember(videoId) { mutableStateOf("") }
     var commentsExpanded by remember(videoId) { mutableStateOf(false) }
+    var repliesById by remember(videoId) { mutableStateOf<Map<String, List<CommentItem>>>(emptyMap()) }
+    var repliesStatusById by remember(videoId) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var repliesOpen by remember(videoId) { mutableStateOf<Set<String>>(emptySet()) }
     var sleepMenuOpen by remember { mutableStateOf(false) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var actionStatus by remember(videoId) { mutableStateOf("") }
     var sleepEndedNote by remember(videoId) { mutableStateOf(false) }
     var serviceConnected by remember { mutableStateOf(false) }
-    // v1.3 controls: OUR HUD (chips + seek area) toggled by a single tap on
-    // the video; the PlayerView's own controller is disabled.
     var controlsVisible by remember { mutableStateOf(true) }
     var descriptionExpanded by remember(videoId) { mutableStateOf(false) }
     var positionMs by remember(videoId) { mutableStateOf(0L) }
     var durationMsState by remember(videoId) { mutableStateOf(0L) }
-    val hbStatus by app.haramBlurEngine.statusFlow.collectAsState()
+    var deviceVolume by remember { mutableStateOf(-1) }
+    var swipeIndicator by remember { mutableStateOf<String?>(null) }
+    var brightnessFraction by remember { mutableStateOf<Float?>(null) }
 
-    // Auto-hide our controls after ~3s while playing; any tap brings them back.
-    LaunchedEffect(controlsVisible, playerState.isPlaying) {
-        if (controlsVisible && playerState.isPlaying) {
+    val resolvedState = rememberUpdatedState(resolved)
+    val dislikeText = dislikeStats?.let {
+        LikesDisplayMath.format(it.likes, it.dislikes, prefs.likesDisplay)
+    }.orEmpty()
+    val currentChannelExempt = resolved?.let {
+        !HaramBlurExemptions.shouldBlurForChannel(exemptKeys, it.uploaderId, it.uploaderName)
+    } ?: false
+
+    val audioManager = remember {
+        runCatching {
+            context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        }.getOrNull()
+    }
+
+    // Auto-hide our controls after ~3s while playing (AUTO_HIDE only);
+    // ALWAYS_VISIBLE pins them. Any tap brings them back in AUTO_HIDE.
+    LaunchedEffect(controlsVisible, playerState.isPlaying, prefs.controlsVisibility) {
+        if (PlayerControlsPolicy.shouldAutoHide(prefs.controlsVisibility, playerState.isPlaying) &&
+            controlsVisible
+        ) {
             delay(3000L)
             controlsVisible = false
         }
     }
-    // Live position for the seek area.
+    LaunchedEffect(prefs.controlsVisibility) {
+        if (prefs.controlsVisibility == ControlsVisibility.ALWAYS_VISIBLE) controlsVisible = true
+    }
+    LaunchedEffect(swipeIndicator) {
+        if (swipeIndicator != null) {
+            delay(900L)
+            swipeIndicator = null
+        }
+    }
+    // Live position for the seek area + device volume for the Vol-0 hint.
     LaunchedEffect(controller) {
         val activeController = controller ?: return@LaunchedEffect
         while (true) {
@@ -189,11 +257,16 @@ fun VideoPlayerScreen(
                 positionMs = activeController.currentPosition.coerceAtLeast(0L)
                 durationMsState = activeController.duration.coerceAtLeast(0L)
             }
+            deviceVolume = runCatching {
+                audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: -1
+            }.getOrDefault(-1)
         }
     }
     LaunchedEffect(Unit) { runCatching { app.haramBlurEngine.ensureInitialized() } }
 
-    val sampler = remember { VideoFrameSampler(app.haramBlurEngine, scope) }
+    val sampler = remember {
+        VideoFrameSampler(app.haramBlurEngine, scope, app.samplerDiagnostics)
+    }
     val regions by sampler.activeBlurRegions.collectAsState()
     val initialCleared by sampler.isInitialFrameCleared.collectAsState()
     val castController = remember { CastRouterController(context) }
@@ -282,7 +355,6 @@ fun VideoPlayerScreen(
             }
             status = ""
             fatalError = null
-            // Re-apply the single-source audio-only state on this attach.
             app.playerController.setAudioOnly(playerState.audioOnly)
             if (prefs.sponsorBlockEnabled && segments.isEmpty()) {
                 segments = runCatching {
@@ -327,9 +399,7 @@ fun VideoPlayerScreen(
                 }
                 if (prefs.returnYouTubeDislikeEnabled) {
                     runCatching {
-                        app.dislikeRepository.fetchDislikeStats(stream.videoId)?.let { stats ->
-                            dislikeText = "Likes ${stats.likes} - Dislikes ${stats.dislikes}"
-                        }
+                        dislikeStats = app.dislikeRepository.fetchDislikeStats(stream.videoId)
                     }
                 }
                 if (prefs.deArrowTitlesEnabled) {
@@ -344,8 +414,7 @@ fun VideoPlayerScreen(
         }
     }
 
-    // In-playback fallback chain on player errors:
-    // chosen URL -> progressive videoStreamUrl (once) -> audioOnlyStreamUrl -> message.
+    // In-playback fallback chain on player errors.
     LaunchedEffect(playerState.playerError, resolved) {
         val error = playerState.playerError ?: return@LaunchedEffect
         val stream = resolved ?: run {
@@ -377,7 +446,6 @@ fun VideoPlayerScreen(
                     onVideoClick(next.videoId)
                     return@launch
                 }
-                // Auto-queue from the same channel, honouring duration rules.
                 val stream = resolved
                 if (stream != null) {
                     val channel = runCatching {
@@ -404,7 +472,6 @@ fun VideoPlayerScreen(
         }
     }
 
-    // Preselect the sleep-timer default once per video.
     LaunchedEffect(videoId) {
         val minutes = SleepTimerMapping.coerceDefault(prefs.sleepTimerDefaultMinutes)
         if (minutes > 0) app.playerController.setSleepTimer(minutes)
@@ -419,8 +486,6 @@ fun VideoPlayerScreen(
             if (segments.isEmpty()) continue
             val pos = runCatching { activeController.currentPosition }.getOrDefault(-1L)
             if (pos < 0) continue
-            // Manual rewind back before/into an already-skipped segment
-            // marks it do-not-skip-again for this session.
             if (lastPos >= 0 && pos < lastPos - 2000L) {
                 suppressedUuids = suppressedUuids + SponsorRewindSuppression.onManualSeek(
                     skippedUuids = skippedUuids,
@@ -484,16 +549,22 @@ fun VideoPlayerScreen(
         if (playerState.audioOnly) runCatching { sampler.stopSampling() }
     }
 
-    // Start the frame sampler once the PlayerView surface exists.
-    LaunchedEffect(playerViewRef, controller) {
-        val view = playerViewRef ?: return@LaunchedEffect
-        val surface = view.videoSurfaceView as? SurfaceView ?: return@LaunchedEffect
+    // Start the frame sampler once the TextureView exists. Exempt
+    // channels are skipped via the provider (reads the resolved stream).
+    LaunchedEffect(textureViewRef, controller) {
+        val view = textureViewRef ?: return@LaunchedEffect
         val activeController = controller ?: return@LaunchedEffect
         runCatching {
             sampler.startSampling(
-                surfaceView = surface,
+                textureView = view,
                 prefsProvider = { app.currentPrefs },
-                isPlayingProvider = { runCatching { activeController.isPlaying }.getOrDefault(false) }
+                isPlayingProvider = { runCatching { activeController.isPlaying }.getOrDefault(false) },
+                isExemptProvider = {
+                    val stream = resolvedState.value
+                    stream != null && !HaramBlurExemptions.shouldBlurForChannel(
+                        app.exemptChannelKeys.value, stream.uploaderId, stream.uploaderName
+                    )
+                }
             )
         }
     }
@@ -510,6 +581,11 @@ fun VideoPlayerScreen(
             appendLine("Source stage: ${resolved?.sourceStage ?: "none"}")
             appendLine("DASH: ${resolved?.dashManifestUrl != null} HLS: ${resolved?.hlsUrl != null}")
             appendLine("Progressive: ${resolved?.videoStreamUrl != null}")
+            val diag = app.samplerDiagnostics.value
+            appendLine(
+                "Sampler: frames=${diag.framesSampled} brightness=${diag.lastFrameBrightness} " +
+                    "detections=${diag.lastDetectionCount} error=${diag.lastError ?: "none"}"
+            )
             val log = resolved?.diagnosticsLog?.takeIf { it.isNotBlank() }
             if (log != null) {
                 appendLine("Extraction log:")
@@ -523,12 +599,27 @@ fun VideoPlayerScreen(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .verticalScroll(rememberScrollState())
-    ) {
+    suspend fun applyCommentFilters(list: List<CommentItem>): List<CommentItem> {
+        val blocked = runCatching { app.database.blocklistDao().getAll() }
+            .getOrDefault(emptyList())
+        return CommentFilters.filter(
+            comments = list,
+            blockedKeywords = blocked.filter { it.filterType == FilterType.COMMENT_KEYWORD }.map { it.pattern },
+            blockedUsernames = blocked.filter { it.filterType == FilterType.COMMENT_USERNAME }.map { it.pattern },
+            blockedChannelIds = blocked.filter { it.filterType == FilterType.COMMENT_CHANNEL_ID }.map { it.pattern },
+            minLikes = prefs.commentMinLikes,
+            maxLikes = prefs.commentMaxLikes
+        )
+    }
+
+    fun commentKey(comment: CommentItem): String =
+        comment.id.ifBlank { "${comment.authorName}#${comment.text.hashCode()}" }
+
+    // ------------------------------------------------------------------
+    // Layout pieces (shared by the pinned and single-scroll layouts)
+    // ------------------------------------------------------------------
+
+    val videoBox: @Composable () -> Unit = {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -537,12 +628,8 @@ fun VideoPlayerScreen(
         ) {
             if (controller != null && playerState.audioOnly) {
                 // Audio Only: the video picture is REMOVED — placeholder with
-                // artwork + title + label. No PlayerView exists in this
-                // state, so no surface can show video. Turning Audio Only
-                // off re-creates the PlayerView below; its player setter
-                // re-binds the video surface (the renderer was already
-                // re-enabled first by PlayerController.setAudioOnly, in
-                // that order), so the picture returns in place.
+                // artwork + title + label. No TextureView exists in this
+                // state, so no surface can show video.
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -569,20 +656,24 @@ fun VideoPlayerScreen(
                     }
                 }
             } else if (controller != null) {
+                // TextureView surface (v1.4): the session player renders
+                // into it via Player.setVideoTextureView; the sampler
+                // reads frames back with getBitmap(). Cleared on release
+                // so the floating window / dock surfaces can take over.
                 AndroidView(
                     factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            player = controller
-                            // OUR controls are the only controls (v1.3): the
-                            // PlayerView controller stays disabled so Bara is
-                            // never left with a controller that eats taps.
-                            useController = false
-                            playerViewRef = this
+                        TextureView(ctx).also { tv ->
+                            textureViewRef = tv
+                            runCatching { controller?.setVideoTextureView(tv) }
                         }
                     },
                     update = { view ->
-                        view.player = controller
-                        playerViewRef = view
+                        if (textureViewRef !== view) textureViewRef = view
+                        runCatching { controller?.setVideoTextureView(view) }
+                    },
+                    onRelease = { view ->
+                        runCatching { controller?.clearVideoTextureView(view) }
+                        if (textureViewRef === view) textureViewRef = null
                     },
                     modifier = Modifier.fillMaxSize()
                 )
@@ -596,18 +687,17 @@ fun VideoPlayerScreen(
                         .padding(16.dp)
                 )
             }
+            // Gesture layer: tap / double-tap / hold in one pointerInput,
+            // vertical swipe controls in a second pointerInput on the SAME
+            // box (Compose gesture composition — the drag detector only
+            // consumes once a real vertical drag starts, taps still land).
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
                         val marginPx = 24.dp.toPx()
                         detectTapGestures(
-                            onTap = {
-                                // Single tap toggles OUR HUD (chips + seek
-                                // area). It can never strand the user: the
-                                // next tap always brings the controls back.
-                                controlsVisible = !controlsVisible
-                            },
+                            onTap = { controlsVisible = !controlsVisible },
                             onPress = { offset ->
                                 if (offset.x < marginPx || offset.x > size.width - marginPx) {
                                     tryAwaitRelease()
@@ -644,6 +734,65 @@ fun VideoPlayerScreen(
                             }
                         )
                     }
+                    .pointerInput(Unit) {
+                        // Swipe controls: LEFT third = brightness,
+                        // RIGHT third = volume, centre third = ignored.
+                        var zone = 0 // -1 left, +1 right, 0 none
+                        detectVerticalDragGestures(
+                            onDragStart = { offset ->
+                                zone = when {
+                                    offset.x < size.width / 3f -> -1
+                                    offset.x > size.width * 2f / 3f -> 1
+                                    else -> 0
+                                }
+                                if (zone == -1 && brightnessFraction == null) {
+                                    val attr = (context as? Activity)?.window?.attributes
+                                    brightnessFraction =
+                                        attr?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f
+                                }
+                            },
+                            onVerticalDrag = { _, dragAmount ->
+                                when (zone) {
+                                    -1 -> {
+                                        val next = SwipeControlMath.applyDrag(
+                                            brightnessFraction ?: 0.5f, dragAmount, size.height.toFloat()
+                                        )
+                                        brightnessFraction = next
+                                        runCatching {
+                                            val activity = context as? Activity
+                                            val attrs = activity?.window?.attributes
+                                            if (activity != null && attrs != null) {
+                                                attrs.screenBrightness = next
+                                                activity.window.attributes = attrs
+                                            }
+                                        }
+                                        swipeIndicator = "Brightness ${(next * 100).toInt()}%"
+                                    }
+                                    1 -> {
+                                        val am = audioManager
+                                        if (am != null) {
+                                            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                            val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                            val fraction =
+                                                if (max > 0) current.toFloat() / max else 0f
+                                            val nextFraction = SwipeControlMath.applyDrag(
+                                                fraction, dragAmount, size.height.toFloat()
+                                            )
+                                            val nextVolume =
+                                                SwipeControlMath.fractionToVolume(nextFraction, max)
+                                            runCatching {
+                                                am.setStreamVolume(AudioManager.STREAM_MUSIC, nextVolume, 0)
+                                            }
+                                            deviceVolume = nextVolume
+                                            swipeIndicator = "Volume ${(nextFraction * 100).toInt()}%"
+                                        }
+                                    }
+                                }
+                            },
+                            onDragEnd = { zone = 0 },
+                            onDragCancel = { zone = 0 }
+                        )
+                    }
             )
             if (controlsVisible && controller != null) {
                 Box(
@@ -677,6 +826,18 @@ fun VideoPlayerScreen(
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 )
             }
+            swipeIndicator?.let { label ->
+                Text(
+                    text = label,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 30.dp)
+                        .background(Color(0xCC000000))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
             skippedPill?.let { (segment, undoPos) ->
                 SponsorSkipPill(
                     category = segment.category,
@@ -690,9 +851,10 @@ fun VideoPlayerScreen(
                 )
             }
         }
+    }
 
+    val controlsArea: @Composable () -> Unit = {
         if (controlsVisible) {
-            // Seek / progress area (part of OUR HUD, toggled with the chips).
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp)) {
                 Slider(
                     value = if (durationMsState > 0) {
@@ -710,8 +872,6 @@ fun VideoPlayerScreen(
                     Text(fmtMs(durationMsState), color = PureTextSecondary, fontSize = 11.sp)
                 }
             }
-            // ONE row of state chips (wraps on narrow screens). Each chip
-            // shows its state in words + colour; tap toggles.
             FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -720,7 +880,11 @@ fun VideoPlayerScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 StateChip(
-                    label = AudioOnlySurface.soundLabel(playerState.isMuted),
+                    label = if (!playerState.isMuted && deviceVolume == 0) {
+                        "${AudioOnlySurface.soundLabel(false)} · Vol 0"
+                    } else {
+                        AudioOnlySurface.soundLabel(playerState.isMuted)
+                    },
                     active = playerState.isMuted,
                     activeColor = Color(0xFFB3261E),
                     onClick = { app.playerController.toggleMute() }
@@ -762,12 +926,23 @@ fun VideoPlayerScreen(
                     }
                 }
                 // PiP sits immediately right of the Sleep Timer chip.
-                StateChip(
-                    label = "PiP",
-                    active = false,
-                    activeColor = PureAccent,
-                    onClick = { (context as? MainActivity)?.enterPipNow() }
-                )
+                Box(
+                    modifier = Modifier
+                        .background(Color(0xFF1E1E1E), RoundedCornerShape(16.dp))
+                        .clickable { (context as? MainActivity)?.enterPipNow() }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Filled.PictureInPictureAlt,
+                            contentDescription = "Picture in picture",
+                            tint = Color.White,
+                            modifier = Modifier.height(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text("PiP", color = Color.White, fontSize = 12.sp)
+                    }
+                }
                 StateChip(
                     label = "Speed ${playerState.playbackSpeed}x",
                     active = playerState.playbackSpeed != 1.0f,
@@ -776,16 +951,20 @@ fun VideoPlayerScreen(
                     onLongClick = { showSpeedSlider = true }
                 )
                 StateChip(
+                    label = if (prefs.autoRotatePlayer) "Rotate: Auto" else "Rotate: Locked",
+                    active = prefs.autoRotatePlayer,
+                    activeColor = PureAccent,
+                    onClick = {
+                        scope.launch {
+                            app.preferences.update { it.copy(autoRotatePlayer = !prefs.autoRotatePlayer) }
+                        }
+                    }
+                )
+                StateChip(
                     label = "⌄ Minimize",
                     active = false,
                     activeColor = PureAccent,
                     onClick = { onMinimize() }
-                )
-                Text(
-                    text = "HaramBlur: ${hbStatus.mode}",
-                    color = if (hbStatus.faceModelLoaded) PureAccent else PureTextSecondary,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
                 )
                 // Cast: MediaRouteButton needs a FragmentActivity host. Any
                 // failure building it hides the button instead of crashing.
@@ -830,8 +1009,41 @@ fun VideoPlayerScreen(
                 )
             }
         }
+    }
 
+    val belowContent: @Composable () -> Unit = {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
+            // Drag handle pill above the title: pull down ~120dp to minimize.
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+                    .pointerInput(Unit) {
+                        var totalDrag = 0f
+                        val threshold = 120.dp.toPx()
+                        detectVerticalDragGestures(
+                            onDragStart = { totalDrag = 0f },
+                            onVerticalDrag = { change, dragAmount ->
+                                change.consume()
+                                totalDrag += dragAmount
+                            },
+                            onDragEnd = {
+                                if (totalDrag > threshold) onMinimize()
+                                totalDrag = 0f
+                            },
+                            onDragCancel = { totalDrag = 0f }
+                        )
+                    }
+                    .padding(vertical = 8.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(48.dp)
+                        .height(5.dp)
+                        .background(Color(0xFF555555), RoundedCornerShape(3.dp))
+                )
+            }
             if (status.isNotBlank()) {
                 Text(status, color = PureTextSecondary, fontSize = 14.sp, lineHeight = 20.sp)
             }
@@ -887,10 +1099,7 @@ fun VideoPlayerScreen(
                     text = "${stream.uploaderName} - ${stream.viewCount} views",
                     color = PureAccent,
                     fontSize = 13.sp,
-                    modifier = Modifier
-                        .padding(top = 4.dp)
-                        .background(Color.Transparent)
-                        .padding(2.dp)
+                    modifier = Modifier.padding(top = 4.dp)
                 )
                 TextButton(onClick = { onChannelClick(stream.uploaderId) }) {
                     Text("Open channel: ${stream.uploaderName}", fontSize = 13.sp)
@@ -906,10 +1115,59 @@ fun VideoPlayerScreen(
                         )
                     }
                     if (descriptionExpanded) {
-                        Text(
-                            stream.description,
-                            color = Color.White, fontSize = 13.sp, lineHeight = 19.sp,
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                        // Formatted description: links open the browser,
+                        // timestamps seek the player.
+                        val annotated = remember(stream.description) {
+                            buildAnnotatedString {
+                                for (segment in DescriptionFormatter.parse(stream.description)) {
+                                    when {
+                                        segment.isTimestamp -> {
+                                            pushStringAnnotation("TS", segment.timestampMs.toString())
+                                            withStyle(
+                                                SpanStyle(
+                                                    color = PureAccent,
+                                                    textDecoration = TextDecoration.Underline
+                                                )
+                                            ) { append(segment.text) }
+                                            pop()
+                                        }
+                                        segment.isLink -> {
+                                            pushStringAnnotation("URL", segment.url.orEmpty())
+                                            withStyle(
+                                                SpanStyle(
+                                                    color = PureAccent,
+                                                    textDecoration = TextDecoration.Underline
+                                                )
+                                            ) { append(segment.text) }
+                                            pop()
+                                        }
+                                        else -> append(segment.text)
+                                    }
+                                }
+                            }
+                        }
+                        ClickableText(
+                            text = annotated,
+                            style = TextStyle(color = Color.White, fontSize = 13.sp, lineHeight = 19.sp),
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                            onClick = { offset ->
+                                annotated.getStringAnnotations("URL", offset, offset)
+                                    .firstOrNull()?.let { ann ->
+                                        runCatching {
+                                            context.startActivity(
+                                                Intent(Intent.ACTION_VIEW, Uri.parse(ann.item))
+                                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            )
+                                        }
+                                        return@ClickableText
+                                    }
+                                annotated.getStringAnnotations("TS", offset, offset)
+                                    .firstOrNull()?.let { ann ->
+                                        ann.item.toLongOrNull()?.let { ms ->
+                                            runCatching { controller?.seekTo(ms) }
+                                        }
+                                    }
+                            }
                         )
                     }
                 }
@@ -975,6 +1233,43 @@ fun VideoPlayerScreen(
                             actionStatus = "Channel blocked"
                         }
                     }) { Text("Block channel", fontSize = 12.sp) }
+                    TextButton(onClick = {
+                        scope.launch {
+                            runCatching {
+                                val dao = app.database.blocklistDao()
+                                if (currentChannelExempt) {
+                                    // Remove the exemption rows (id + name).
+                                    dao.getAll()
+                                        .filter {
+                                            it.filterType == FilterType.EXEMPT_CHANNEL &&
+                                                (it.pattern == stream.uploaderId ||
+                                                    it.pattern == stream.uploaderName)
+                                        }
+                                        .forEach { dao.delete(it.id) }
+                                    actionStatus = "HaramBlur exemption removed for this channel"
+                                } else {
+                                    dao.add(
+                                        com.puretube.app.data.local.entity.BlockedFilterEntity(
+                                            pattern = stream.uploaderId,
+                                            filterType = FilterType.EXEMPT_CHANNEL
+                                        )
+                                    )
+                                    dao.add(
+                                        com.puretube.app.data.local.entity.BlockedFilterEntity(
+                                            pattern = stream.uploaderName,
+                                            filterType = FilterType.EXEMPT_CHANNEL
+                                        )
+                                    )
+                                    actionStatus = "HaramBlur will not blur this channel"
+                                }
+                            }
+                        }
+                    }) {
+                        Text(
+                            if (currentChannelExempt) "Don't blur: ON" else "Don't blur this channel",
+                            fontSize = 12.sp
+                        )
+                    }
                 }
                 if (showPlaylistDialog) {
                     AddToPlaylistDialog(item = feedItem, onDismiss = { showPlaylistDialog = false })
@@ -984,7 +1279,6 @@ fun VideoPlayerScreen(
                 Text(actionStatus, color = PureAccent, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
             }
 
-            // Queue
             if (queue.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Text("Up next (${queue.size})", color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
@@ -1008,25 +1302,15 @@ fun VideoPlayerScreen(
             }
 
             if (prefs.enableComments) {
-                // Comments: collapsed by default, loaded on expand.
                 Spacer(modifier = Modifier.height(10.dp))
                 TextButton(onClick = {
                     commentsExpanded = !commentsExpanded
                     if (commentsExpanded && comments.isEmpty()) {
                         scope.launch {
                             commentsStatus = "Loading comments…"
-                            val blocked = runCatching { app.database.blocklistDao().getAll() }
-                                .getOrDefault(emptyList())
                             app.streamRepository.fetchComments(videoId)
                                 .onSuccess { fetched ->
-                                    comments = CommentFilters.filter(
-                                        comments = fetched,
-                                        blockedKeywords = blocked.filter { it.filterType == FilterType.COMMENT_KEYWORD }.map { it.pattern },
-                                        blockedUsernames = blocked.filter { it.filterType == FilterType.COMMENT_USERNAME }.map { it.pattern },
-                                        blockedChannelIds = blocked.filter { it.filterType == FilterType.COMMENT_CHANNEL_ID }.map { it.pattern },
-                                        minLikes = prefs.commentMinLikes,
-                                        maxLikes = prefs.commentMaxLikes
-                                    )
+                                    comments = applyCommentFilters(fetched)
                                     commentsStatus = if (comments.isEmpty()) {
                                         "No comments to show (disabled, filtered, or unavailable)."
                                     } else ""
@@ -1044,12 +1328,72 @@ fun VideoPlayerScreen(
                         Text(commentsStatus, color = PureTextSecondary, fontSize = 13.sp)
                     }
                     comments.forEach { comment ->
+                        val key = commentKey(comment)
                         Column(modifier = Modifier.padding(vertical = 6.dp)) {
                             Text(
                                 "${comment.authorName} · ${if (comment.likeCount >= 0) "${comment.likeCount} likes" else ""}",
                                 color = PureAccent, fontSize = 12.sp
                             )
                             Text(comment.text, color = Color.White, fontSize = 13.sp, lineHeight = 18.sp)
+                            if (comment.hasReplies) {
+                                val isOpen = key in repliesOpen
+                                TextButton(onClick = {
+                                    if (isOpen) {
+                                        repliesOpen = repliesOpen - key
+                                    } else {
+                                        repliesOpen = repliesOpen + key
+                                        if (key !in repliesById && key !in repliesStatusById) {
+                                            scope.launch {
+                                                app.streamRepository.fetchCommentReplies(comment)
+                                                    .onSuccess { fetched ->
+                                                        val filtered = applyCommentFilters(fetched)
+                                                        if (filtered.isEmpty()) {
+                                                            repliesStatusById = repliesStatusById +
+                                                                (key to "Replies unavailable for this comment.")
+                                                        } else {
+                                                            repliesById = repliesById + (key to filtered)
+                                                        }
+                                                    }
+                                                    .onFailure {
+                                                        repliesStatusById = repliesStatusById +
+                                                            (key to "Replies unavailable for this comment.")
+                                                    }
+                                            }
+                                        }
+                                    }
+                                }) {
+                                    Text(
+                                        if (isOpen) "Hide replies" else "View replies (${comment.replyCount})",
+                                        fontSize = 12.sp
+                                    )
+                                }
+                                if (isOpen) {
+                                    repliesStatusById[key]?.let { msg ->
+                                        Text(msg, color = PureTextSecondary, fontSize = 12.sp)
+                                    }
+                                    repliesById[key]?.forEach { reply ->
+                                        Column(
+                                            modifier = Modifier
+                                                .padding(start = 16.dp, top = 4.dp, bottom = 4.dp)
+                                        ) {
+                                            Text(
+                                                "${reply.authorName} · ${if (reply.likeCount >= 0) "${reply.likeCount} likes" else ""}",
+                                                color = PureAccent, fontSize = 11.sp
+                                            )
+                                            Text(
+                                                reply.text, color = Color.White,
+                                                fontSize = 12.sp, lineHeight = 17.sp
+                                            )
+                                        }
+                                    }
+                                    if (key !in repliesById && key !in repliesStatusById) {
+                                        Text(
+                                            "Loading replies…",
+                                            color = PureTextSecondary, fontSize = 12.sp
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1062,6 +1406,39 @@ fun VideoPlayerScreen(
                     modifier = Modifier.padding(top = 10.dp)
                 )
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Layout branch: sticky (pinned) header vs single-scroll page.
+    // The same three pieces are used in both — no duplicated content.
+    // ------------------------------------------------------------------
+    if (prefs.keepVideoPinnedWhileScrolling) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            videoBox()
+            controlsArea()
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                belowContent()
+            }
+        }
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .verticalScroll(rememberScrollState())
+        ) {
+            videoBox()
+            controlsArea()
+            belowContent()
         }
     }
 }

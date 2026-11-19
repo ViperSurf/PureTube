@@ -97,7 +97,43 @@ fun ChannelScreen(
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 val isSubscribed = subscriptions.any { it.channelId == channel.channelId }
-                Button(onClick = {
+                val exemptKeys by app.exemptChannelKeys.collectAsState()
+                val isExempt = !com.puretube.app.domain.HaramBlurExemptions.shouldBlurForChannel(
+                    exemptKeys, channel.channelId, channel.channelName
+                )
+                Column {
+                    Button(onClick = {
+                        scope.launch {
+                            runCatching {
+                                val dao = app.database.blocklistDao()
+                                if (isExempt) {
+                                    dao.getAll()
+                                        .filter {
+                                            it.filterType == com.puretube.app.data.local.entity.FilterType.EXEMPT_CHANNEL &&
+                                                (it.pattern == channel.channelId ||
+                                                    it.pattern == channel.channelName)
+                                        }
+                                        .forEach { dao.delete(it.id) }
+                                } else {
+                                    dao.add(
+                                        com.puretube.app.data.local.entity.BlockedFilterEntity(
+                                            pattern = channel.channelId,
+                                            filterType = com.puretube.app.data.local.entity.FilterType.EXEMPT_CHANNEL
+                                        )
+                                    )
+                                    dao.add(
+                                        com.puretube.app.data.local.entity.BlockedFilterEntity(
+                                            pattern = channel.channelName,
+                                            filterType = com.puretube.app.data.local.entity.FilterType.EXEMPT_CHANNEL
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }) {
+                        Text(if (isExempt) "Don't blur: ON" else "Don't blur", fontSize = 12.sp)
+                    }
+                    Button(onClick = {
                     scope.launch {
                         runCatching {
                             if (isSubscribed) {
@@ -116,6 +152,7 @@ fun ChannelScreen(
                         }
                     }
                 }) { Text(if (isSubscribed) "Unsubscribe" else "Subscribe", fontSize = 12.sp) }
+                }
             } ?: Text("Channel", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
         if (status.isNotBlank()) {

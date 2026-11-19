@@ -190,6 +190,13 @@ fun SearchScreen(
         initialFirstVisibleItemScrollOffset = session.scrollOffset
     )
 
+    // v1.4: a session reset (double-tap Search) scrolls both lists home.
+    LaunchedEffect(session.resetEpoch) {
+        if (session.resetEpoch > 0) {
+            runCatching { listState.scrollToItem(0) }
+            runCatching { gridState.scrollToItem(0) }
+        }
+    }
     LaunchedEffect(listState) {
         snapshotFlow {
             listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset

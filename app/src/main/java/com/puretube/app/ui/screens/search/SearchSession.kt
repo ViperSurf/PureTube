@@ -25,4 +25,22 @@ class SearchSession {
     var loadingMore by mutableStateOf(false)
     var scrollIndex by mutableStateOf(0)
     var scrollOffset by mutableStateOf(0)
+    /** v1.4: bumped on every reset; SearchScreen observes it to scroll to top. */
+    var resetEpoch by mutableStateOf(0)
+
+    /** Clears query, results, type filter, status and scroll (v1.4). */
+    fun reset() {
+        query = ""
+        filter = SearchTypeFilter.ALL
+        hits = emptyList()
+        hasSearched = false
+        hasMore = false
+        status = "Search YouTube without Shorts, tracking, or recommendations."
+        errorDetail = ""
+        loading = false
+        loadingMore = false
+        scrollIndex = 0
+        scrollOffset = 0
+        resetEpoch++
+    }
 }
