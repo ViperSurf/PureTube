@@ -42,7 +42,10 @@ data class LocalPlaylistEntity(
     @PrimaryKey(autoGenerate = true) val playlistId: Long = 0,
     val name: String,
     val createdAtEpochMs: Long,
-    val visibility: PlaylistVisibility = PlaylistVisibility.PRIVATE
+    val visibility: PlaylistVisibility = PlaylistVisibility.PRIVATE,
+    /** v2.0: full YouTube browse id ("VLPL...", "VLLL") when this playlist
+     *  is a synced mirror of an account playlist; null for local-only lists. */
+    val youtubePlaylistId: String? = null
 )
 
 @Entity(

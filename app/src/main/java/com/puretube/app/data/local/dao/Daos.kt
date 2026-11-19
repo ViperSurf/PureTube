@@ -77,6 +77,9 @@ interface PlaylistDao {
     @Query("SELECT * FROM local_playlists WHERE name = :name LIMIT 1")
     suspend fun getByName(name: String): LocalPlaylistEntity?
 
+    @Query("SELECT * FROM local_playlists WHERE youtubePlaylistId = :youtubeId LIMIT 1")
+    suspend fun getByYoutubeId(youtubeId: String): LocalPlaylistEntity?
+
     @Insert
     suspend fun createPlaylist(playlist: LocalPlaylistEntity): Long
 

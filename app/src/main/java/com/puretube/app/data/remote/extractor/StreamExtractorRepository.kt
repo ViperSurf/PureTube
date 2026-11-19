@@ -47,6 +47,8 @@ data class ResolvedVideoStream(
     val thumbnailUrl: String,
     /** Video description text (v1.3); empty when the source has none. */
     val description: String = "",
+    /** Related / up-next videos from the same extraction (v2.0); empty when the stage has none. */
+    val related: List<FeedItem> = emptyList(),
     /** Which failover stage produced this stream (v1.2 diagnostics). */
     val sourceStage: String = "",
     /** One line per stage tried, in order (v1.2 diagnostics). */
@@ -274,9 +276,25 @@ class StreamExtractorRepository(
             audioOnlyStreamUrl = bestAudio,
             thumbnailUrl = imageThumbs(safe { info.thumbnails })
                 .maxByOrNull { it.height }?.url.orEmpty(),
-            description = safe { info.description?.content }.orEmpty()
+            description = safe { info.description?.content }.orEmpty(),
+            related = runCatching {
+                safe { info.relatedStreams }?.filterNotNull().orEmpty()
+                    .filterIsInstance<StreamInfoItem>().mapFeedSafe()
+            }.getOrDefault(emptyList())
         )
     }
+
+    /** Related videos for a video, straight from the extractor (v2.0 fallback path). */
+    suspend fun fetchRelated(videoId: String): Result<List<FeedItem>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val info = StreamInfo.getInfo(
+                    ServiceList.YouTube, normalizeAndStripShortsUrl(videoId)
+                )
+                safe { info.relatedStreams }?.filterNotNull().orEmpty()
+                    .filterIsInstance<StreamInfoItem>().mapFeedSafe()
+            }
+        }
 
     private fun extractViaPiped(baseUrl: String, videoId: String): ResolvedVideoStream {
         val req = Request.Builder().url("$baseUrl/streams/$videoId").build()
