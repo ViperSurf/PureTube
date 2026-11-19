@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -72,6 +73,7 @@ fun SubscriptionsScreen(
 
     var selectedChannelId by remember { mutableStateOf<String?>(null) }
     var feedItems by remember { mutableStateOf<List<FeedItem>>(emptyList()) }
+    var feedLoading by remember { mutableStateOf(false) }
     var feedStatus by remember { mutableStateOf("") }
     var feedCache by remember { mutableStateOf<Map<String, List<FeedItem>>>(emptyMap()) }
     var addChannelText by remember { mutableStateOf("") }
@@ -134,7 +136,9 @@ fun SubscriptionsScreen(
     }
 
     LaunchedEffect(subscriptions, selectedChannelId) {
+        feedLoading = true
         runCatching { loadFeed(force = false) }
+        feedLoading = false
     }
 
     LazyColumn(
@@ -160,7 +164,13 @@ fun SubscriptionsScreen(
                         },
                         label = { Text("Unwatched only") }
                     )
-                    TextButton(onClick = { scope.launch { runCatching { loadFeed(force = true) } } }) {
+                    TextButton(onClick = {
+                        scope.launch {
+                            feedLoading = true
+                            runCatching { loadFeed(force = true) }
+                            feedLoading = false
+                        }
+                    }) {
                         Text("Refresh")
                     }
                 }
@@ -182,6 +192,9 @@ fun SubscriptionsScreen(
                     }
                 }
             }
+        }
+        item {
+            com.puretube.app.ui.components.FeedDisplayControls()
         }
         item {
             Column(
@@ -328,6 +341,17 @@ fun SubscriptionsScreen(
                         .border(1.dp, PureBorder, RoundedCornerShape(10.dp))
                         .padding(14.dp)
                 )
+            }
+        } else if (feedLoading) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                    Text(
+                        text = "Loading your feed…",
+                        color = PureTextSecondary, fontSize = 14.sp,
+                        modifier = Modifier.padding(start = 10.dp)
+                    )
+                }
             }
         } else if (feedItems.isEmpty()) {
             item {

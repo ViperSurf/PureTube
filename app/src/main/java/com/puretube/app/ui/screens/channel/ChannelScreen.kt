@@ -128,6 +128,7 @@ fun ChannelScreen(
                 ShortsFilterEngine.filterItems(channel.videos, prefs.stripShortsEverywhere),
                 prefs.contentMinLikes, prefs.contentMaxLikes
             )
+            com.puretube.app.ui.components.FeedDisplayControls()
             if (videos.isEmpty()) {
                 Text(
                     "No videos to show for this channel right now.",

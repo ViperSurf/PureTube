@@ -254,31 +254,8 @@ fun SearchScreen(
             }
         }
 
-        // Quick layout / scale / columns controls
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TextButton(onClick = {
-                val values = FeedLayout.entries
-                val next = values[(prefs.feedLayout.ordinal + 1) % values.size]
-                scope.launch { app.preferences.update { it.copy(feedLayout = next) } }
-            }) { Text("Layout: ${prefs.feedLayout.name}", fontSize = 12.sp) }
-            TextButton(onClick = {
-                val values = ThumbnailScale.entries
-                val next = values[(prefs.feedThumbnailScale.ordinal + 1) % values.size]
-                scope.launch { app.preferences.update { it.copy(feedThumbnailScale = next) } }
-            }) { Text("Size: ${prefs.feedThumbnailScale.name}", fontSize = 12.sp) }
-            if (prefs.feedLayout == FeedLayout.GRID || prefs.feedLayout == FeedLayout.THUMBNAIL_ONLY) {
-                TextButton(onClick = {
-                    val options = listOf(2, 3, 4)
-                    val idx = options.indexOf(prefs.gridColumns).let { if (it < 0) 0 else it }
-                    scope.launch {
-                        app.preferences.update { it.copy(gridColumns = options[(idx + 1) % options.size]) }
-                    }
-                }) { Text("Columns: ${prefs.gridColumns}", fontSize = 12.sp) }
-            }
-        }
+        // Shared layout / scale / columns controls (same prefs everywhere)
+        com.puretube.app.ui.components.FeedDisplayControls()
 
         if (session.loading) {
             CircularProgressIndicator(modifier = Modifier.padding(vertical = 12.dp))

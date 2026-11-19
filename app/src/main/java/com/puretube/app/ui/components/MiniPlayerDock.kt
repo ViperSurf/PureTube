@@ -83,6 +83,14 @@ fun MiniPlayerDock(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
+            if (state.audioOnly) {
+                Text(
+                    text = "Audio Only",
+                    color = Color(0xFFFFB300),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(horizontal = 4.dp)
+                )
+            }
             if (onToggleMute != null) {
                 IconButton(onClick = onToggleMute) {
                     Icon(

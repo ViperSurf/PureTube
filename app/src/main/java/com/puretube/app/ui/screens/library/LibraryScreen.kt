@@ -176,6 +176,9 @@ fun LibraryScreen(
         item {
             Text("Library", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
+        item {
+            com.puretube.app.ui.components.FeedDisplayControls()
+        }
 
         // ---- Bookmarked playlists ----
         item {

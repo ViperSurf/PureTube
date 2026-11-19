@@ -147,6 +147,15 @@ class MainActivity : FragmentActivity() {
 
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var mediaController by mutableStateOf<MediaController?>(null)
+    private var inPictureInPicture by mutableStateOf(false)
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: android.content.res.Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        inPictureInPicture = isInPictureInPictureMode
+    }
     private var pendingVideoId by mutableStateOf<String?>(null)
 
     private val pocketSkipDetector by lazy {
@@ -204,7 +213,8 @@ class MainActivity : FragmentActivity() {
                     app = app,
                     controller = mediaController,
                     pendingVideoId = pendingVideoId,
-                    onPendingVideoConsumed = { pendingVideoId = null }
+                    onPendingVideoConsumed = { pendingVideoId = null },
+                    inPictureInPicture = inPictureInPicture
                 )
             }
         }
@@ -296,7 +306,8 @@ private fun PureTubeNav(
     app: PureTubeApp,
     controller: MediaController?,
     pendingVideoId: String?,
-    onPendingVideoConsumed: () -> Unit
+    onPendingVideoConsumed: () -> Unit,
+    inPictureInPicture: Boolean = false
 ) {
     val navController = rememberNavController()
     val startRoute = remember {
@@ -338,7 +349,7 @@ private fun PureTubeNav(
 
     Scaffold(
         containerColor = Color.Black,
-        bottomBar = {
+        bottomBar = { if (!inPictureInPicture) {
             Column(modifier = Modifier.background(Color.Black)) {
                 if (currentRoute?.startsWith("player") != true && playerState.title.isNotBlank()) {
                     Box(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
@@ -411,7 +422,7 @@ private fun PureTubeNav(
                     )
                 }
             }
-        }
+        } }
     ) { padding ->
         Box(
             modifier = Modifier
@@ -520,7 +531,7 @@ private fun PureTubeNav(
                     )
                 }
             }
-            notice?.let { text ->
+            if (!inPictureInPicture) notice?.let { text ->
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -532,7 +543,7 @@ private fun PureTubeNav(
                     Text(text, color = Color.White, fontSize = 13.sp)
                 }
             }
-            if (floatingOpen && currentRoute?.startsWith("player") != true) {
+            if (!inPictureInPicture && floatingOpen && currentRoute?.startsWith("player") != true) {
                 FloatingMiniWindow(
                     controller = controller,
                     state = playerState,
@@ -544,11 +555,8 @@ private fun PureTubeNav(
                             navController.navigate("player/$videoId") { launchSingleTop = true }
                         }
                     },
-                    onClose = {
-                        floatingOpen = false
-                        controller?.stop()
-                        controller?.clearMediaItems()
-                    }
+                    // v1.3: Close collapses to the dock; playback continues.
+                    onClose = { floatingOpen = false }
                 )
             }
             if (prefs.nightOledDimmerAlpha > 0f) {

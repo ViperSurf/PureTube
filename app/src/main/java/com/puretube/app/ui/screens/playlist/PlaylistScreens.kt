@@ -38,6 +38,7 @@ import com.puretube.app.PureTubeApp
 import com.puretube.app.data.local.entity.PlaylistVisibility
 import com.puretube.app.data.remote.extractor.FeedItem
 import com.puretube.app.data.remote.extractor.RemotePlaylistPayload
+import com.puretube.app.ui.components.FeedDisplayControls
 import com.puretube.app.ui.components.FeedListStandalone
 import com.puretube.app.ui.components.VideoCardItem
 import com.puretube.app.ui.theme.PureAccent
@@ -163,6 +164,7 @@ fun LocalPlaylistScreen(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp)
         ) {
+            item { FeedDisplayControls() }
             items(videos, key = { it.videoId }) { video ->
                 Column {
                     VideoCardItem(
@@ -276,6 +278,7 @@ fun RemotePlaylistScreen(
                     }
                 }) { Text("Queue all", fontSize = 13.sp) }
             }
+            FeedDisplayControls()
             FeedListStandalone(
                 items = loaded.videos,
                 layout = prefs.feedLayout,

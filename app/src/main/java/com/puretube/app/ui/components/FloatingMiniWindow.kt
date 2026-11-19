@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,12 +45,15 @@ import com.puretube.app.ui.theme.PureBorder
 import kotlin.math.roundToInt
 
 /**
- * In-app floating mini window (v1.2): a small draggable 16:9 video surface
- * (~1/3 screen width) over the current screen, bound to the SAME
- * MediaController as the full player — the surface moves, no second player
- * is created. The full player screen must be popped before this shows (a
- * PlayerView can only attach to one surface at a time); on expand/close the
- * view detaches in onRelease.
+ * In-app floating mini window (v1.2, controls v1.3): a small draggable
+ * 16:9 video surface over the current screen, bound to the SAME
+ * MediaController as the full player — the surface moves, no second
+ * player is created. v1.3 adds S/M/L resize, an explicit Expand, and an
+ * explicit Close that COLLAPSES to the dock (playback continues) instead
+ * of stopping. In audio-only mode it shows the audio placeholder, never
+ * video. The full player screen must be popped before this shows (a
+ * PlayerView can only attach to one surface at a time); on expand/close
+ * the view detaches in onRelease.
  */
 @Composable
 fun FloatingMiniWindow(
@@ -63,6 +67,10 @@ fun FloatingMiniWindow(
     if (state.title.isBlank() || controller == null) return
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
+    // S / M / L sizes (v1.3)
+    var sizeIndex by remember { mutableStateOf(1) }
+    val widths = listOf(140.dp, 184.dp, 264.dp)
+    val sizeLabels = listOf("S", "M", "L")
     val context = LocalContext.current
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -71,7 +79,7 @@ fun FloatingMiniWindow(
                 .align(Alignment.BottomEnd)
                 .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
                 .padding(12.dp)
-                .width(184.dp)
+                .width(widths[sizeIndex])
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF101010))
                 .border(1.dp, PureBorder, RoundedCornerShape(10.dp))
@@ -83,22 +91,40 @@ fun FloatingMiniWindow(
                     }
                 }
         ) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        setBackgroundColor(android.graphics.Color.BLACK)
-                    }
-                },
-                update = { view ->
-                    if (view.player !== controller) view.player = controller
-                },
-                onRelease = { view -> view.player = null },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .clickable { onExpand() }
-            )
+            if (state.audioOnly) {
+                // Audio-only: placeholder, NEVER a video surface.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .background(Color(0xFF0D0D0D))
+                        .clickable { onExpand() }
+                ) {
+                    Text(
+                        text = "Audio Only",
+                        color = Color(0xFFFFB300),
+                        fontSize = 12.sp,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+            } else {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            useController = false
+                            setBackgroundColor(android.graphics.Color.BLACK)
+                        }
+                    },
+                    update = { view ->
+                        if (view.player !== controller) view.player = controller
+                    },
+                    onRelease = { view -> view.player = null },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clickable { onExpand() }
+                )
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -122,10 +148,16 @@ fun FloatingMiniWindow(
                         .weight(1f)
                         .clickable { onExpand() }
                 )
+                IconButton(onClick = { sizeIndex = (sizeIndex + 1) % widths.size }) {
+                    Text(sizeLabels[sizeIndex], color = Color.White, fontSize = 12.sp)
+                }
+                IconButton(onClick = onExpand) {
+                    Text("Expand", color = Color.White, fontSize = 11.sp)
+                }
                 IconButton(onClick = onClose) {
                     Icon(
                         imageVector = Icons.Filled.Close,
-                        contentDescription = "Close floating player",
+                        contentDescription = "Close to dock (playback continues)",
                         tint = Color.White
                     )
                 }
