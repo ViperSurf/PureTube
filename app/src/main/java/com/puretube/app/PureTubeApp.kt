@@ -225,7 +225,7 @@ class PureTubeApp : Application() {
                 currentPrefs = it
                 if (it.appLanguage != appliedLanguage) {
                     appliedLanguage = it.appLanguage
-                    com.puretube.app.ui.LocaleHelper.apply(this@PureTubeApp, it.appLanguage)
+                    LocaleHelper.apply(this@PureTubeApp, it.appLanguage)
                 }
             }
         }

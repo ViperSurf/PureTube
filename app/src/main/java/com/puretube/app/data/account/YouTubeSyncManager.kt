@@ -203,7 +203,7 @@ class YouTubeSyncManager(
                     )
                 }
                 if (!com.puretube.app.domain.PlaylistPushPlanner
-                        .isEditable(storedId)
+                        .isEditablePlaylist(storedId)
                 ) {
                     throw IllegalStateException(
                         "That playlist can't be pushed (system playlist)."
@@ -232,7 +232,7 @@ class YouTubeSyncManager(
                     val remoteIds = innertubeClient.playlistVideoIds(storedId)
                         .getOrThrow()
                     val missing = com.puretube.app.domain.PlaylistPushPlanner
-                        .missingVideos(localIds, remoteIds)
+                        .missingVideos(localIds, remoteIds.toSet())
                     if (missing.isNotEmpty()) {
                         innertubeClient.addVideosToPlaylist(storedId, missing)
                             .getOrThrow()

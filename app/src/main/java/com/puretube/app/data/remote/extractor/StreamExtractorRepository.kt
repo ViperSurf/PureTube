@@ -310,7 +310,9 @@ class StreamExtractorRepository(
             }.getOrDefault(emptyList()),
             uploadDateEpochMs = runCatching {
                 safe { info.uploadDate }?.let { wrapper ->
-                    runCatching { wrapper.date().timeInMillis }.getOrDefault(0L)
+                    runCatching {
+                        wrapper.dateTime.toInstant().toEpochMilli()
+                    }.getOrDefault(0L)
                 } ?: 0L
             }.getOrDefault(0L),
             uploadDateText = safe { info.textualUploadDate }?.takeIf { it.isNotBlank() },

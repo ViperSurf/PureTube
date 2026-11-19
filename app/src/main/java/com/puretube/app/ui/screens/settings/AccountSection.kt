@@ -35,7 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.puretube.app.PureTubeApp
-import com.puretube.app.domain.DeviceCodeParse
+import com.puretube.app.domain.DeviceCodeGrant
+import com.puretube.app.domain.DevicePollResult
 import com.puretube.app.ui.theme.PureBorder
 import com.puretube.app.ui.theme.PureTextSecondary
 import kotlinx.coroutines.delay
@@ -68,7 +69,7 @@ fun AccountSectionBlock(app: PureTubeApp) {
     var cookieDraft by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var deviceFlow by remember { mutableStateOf<DeviceCodeParse.DeviceCode?>(null) }
+    var deviceFlow by remember { mutableStateOf<DeviceCodeGrant?>(null) }
 
     fun attemptCookieSignIn(header: String) {
         if (busy) return
@@ -90,7 +91,7 @@ fun AccountSectionBlock(app: PureTubeApp) {
     // Device-code polling loop: runs while a code is on screen.
     LaunchedEffect(deviceFlow) {
         val flow = deviceFlow ?: return@LaunchedEffect
-        var intervalSeconds = flow.intervalSeconds.coerceAtLeast(5)
+        var intervalSeconds = flow.intervalSeconds.coerceAtLeast(5L)
         val deadline = System.currentTimeMillis() + flow.expiresInSeconds * 1000L
         while (deviceFlow == flow) {
             delay(intervalSeconds * 1000L)
@@ -106,25 +107,25 @@ fun AccountSectionBlock(app: PureTubeApp) {
                     break
                 }
             when (outcome) {
-                is DeviceCodeParse.TokenOutcome.Pending ->
+                is DevicePollResult.Pending ->
                     status = "Waiting for approval… enter the code at youtube.com/activate."
-                is DeviceCodeParse.TokenOutcome.SlowDown -> {
+                is DevicePollResult.SlowDown -> {
                     intervalSeconds += 5
                     status = "Waiting for approval…"
                 }
-                is DeviceCodeParse.TokenOutcome.Approved -> {
+                is DevicePollResult.Approved -> {
                     status = "Signed in as ${app.accountRepository.state.value.name}."
                     deviceFlow = null
                 }
-                is DeviceCodeParse.TokenOutcome.Denied -> {
+                is DevicePollResult.Denied -> {
                     status = "Sign-in was denied on the other device. Nothing was stored."
                     deviceFlow = null
                 }
-                is DeviceCodeParse.TokenOutcome.Expired -> {
+                is DevicePollResult.Expired -> {
                     status = "That code expired — start again to get a fresh one."
                     deviceFlow = null
                 }
-                is DeviceCodeParse.TokenOutcome.Failed -> {
+                is DevicePollResult.Failed -> {
                     status = outcome.message
                     deviceFlow = null
                 }

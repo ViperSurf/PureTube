@@ -192,11 +192,7 @@ private fun PipVideoSurface(controller: MediaController?) {
 
 class MainActivity : FragmentActivity() {
 
-    /** v2.1: legacy (pre-API 33) per-app locale wrap; no-op on 33+. */
-    override fun attachBaseContext(newBase: android.content.Context) {
-        super.attachBaseContext(com.puretube.app.ui.LocaleHelper.wrap(newBase))
-    }
-
+    /** Legacy (pre-API 33) per-app locale wrap; no-op on 33+ (LocaleManager). */
     override fun attachBaseContext(newBase: Context) {
         super.attachBaseContext(LocaleHelper.wrap(newBase))
     }

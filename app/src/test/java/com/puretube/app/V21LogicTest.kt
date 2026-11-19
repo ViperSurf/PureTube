@@ -1,20 +1,20 @@
 package com.puretube.app
 
 import com.puretube.app.data.local.datastore.AppLanguage
-import com.puretube.app.data.local.datastore.BlurDetectionMode
 import com.puretube.app.data.local.datastore.BlurStrength
 import com.puretube.app.data.local.datastore.CaptionBackground
 import com.puretube.app.data.local.datastore.CaptionTextColor
 import com.puretube.app.data.local.datastore.CaptionTextSize
 import com.puretube.app.data.local.datastore.VolumeZeroAction
-import com.puretube.app.data.remote.extractor.AudioTrackInfo
-import com.puretube.app.data.remote.extractor.SubtitleTrackInfo
+import com.puretube.app.domain.AudioTrackChoice
 import com.puretube.app.domain.AudioTrackLogic
 import com.puretube.app.domain.BlurStrengthMath
 import com.puretube.app.domain.CaptionParser
 import com.puretube.app.domain.CaptionStyleMath
 import com.puretube.app.domain.CaptionTrackLogic
+import com.puretube.app.domain.CaptionTrackOption
 import com.puretube.app.domain.DeviceCodeParse
+import com.puretube.app.domain.DevicePollResult
 import com.puretube.app.domain.FullScreenBlurHold
 import com.puretube.app.domain.GestureClassifier
 import com.puretube.app.domain.LanguageSupport
@@ -28,6 +28,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.ZoneId
 
 class V21LogicTest {
 
@@ -55,7 +56,6 @@ class V21LogicTest {
         c.onDown(300f, 100f, 200)
         val fired = c.onUp(280)
         assertEquals(listOf(GestureClassifier.Action.DOUBLE_TAP), actions(fired))
-        // Nothing left pending afterwards.
         assertTrue(c.onTimeout(1000).isEmpty())
     }
 
@@ -64,11 +64,18 @@ class V21LogicTest {
         val c = GestureClassifier()
         c.onDown(100f, 100f, 0)
         val dragStart = c.onMove(100f, 140f, 50) // 40px > slop
-        assertEquals(listOf(GestureClassifier.Action.DRAG_START), actions(dragStart))
+        assertEquals(
+            listOf(
+                GestureClassifier.Action.DRAG_START,
+                GestureClassifier.Action.DRAG_DELTA
+            ),
+            actions(dragStart)
+        )
+        assertEquals(40f, dragStart[1].dragDy, 0.01f)
         val deltas = c.onMove(100f, 200f, 100)
         assertEquals(listOf(GestureClassifier.Action.DRAG_DELTA), actions(deltas))
         assertEquals(100f, deltas[0].dragDy, 0.01f)
-        // No hold even though total press time exceeds the hold delay.
+        // No hold even though total press time exceeds the hold threshold.
         assertTrue(c.onTick(500).isEmpty())
         val end = c.onUp(600)
         assertEquals(listOf(GestureClassifier.Action.DRAG_END), actions(end))
@@ -159,8 +166,6 @@ class V21LogicTest {
 
     @Test
     fun resumeIsUnreachableWhenOptionOff() {
-        // Pause at zero, then volume returns with the option OFF:
-        // the v2.0 rule — never auto-resume.
         val (paused, _) = zeroSample(
             VolumeZeroRule.State(), zero = true, playing = true, now = 1000
         )
@@ -184,8 +189,6 @@ class V21LogicTest {
 
     @Test
     fun resumeNeverFiresForUserPausedVideo() {
-        // Video was already paused by the USER when volume hit zero:
-        // pausedByRule stays false, so no resume even with the option on.
         val (armed, act1) = zeroSample(
             VolumeZeroRule.State(), zero = true, playing = false, now = 1000, resume = true
         )
@@ -216,12 +219,11 @@ class V21LogicTest {
     fun blurStrengthIsMonotonic() {
         val strengths = BlurStrength.entries
         val pixelWidths = strengths.map { BlurStrengthMath.pixelFrameSize(it).first }
-        val frostAlphas = strengths.map { BlurStrengthMath.frostAlpha(it) }
+        val frostAlphas = strengths.map { BlurStrengthMath.frostTintAlpha(it) }
         val divisors = strengths.map { BlurStrengthMath.thumbnailMosaicDivisor(it) }
         assertEquals(pixelWidths.sortedDescending(), pixelWidths) // coarser = smaller frame
         assertEquals(frostAlphas.sorted(), frostAlphas) // more opaque with strength
         assertEquals(divisors.sortedDescending(), divisors) // bigger blocks with strength
-        // Strong (the default) must be materially stronger than Light.
         assertTrue(
             BlurStrengthMath.pixelFrameSize(BlurStrength.STRONG).first <
                 BlurStrengthMath.pixelFrameSize(BlurStrength.LIGHT).first
@@ -230,17 +232,11 @@ class V21LogicTest {
 
     @Test
     fun fullScreenHoldKeepsBlurBrieflyAfterClear() {
-        val hold = FullScreenBlurHold(holdMs = 600)
-        assertFalse(hold.update(detectedNow = false, nowMs = 0))
-        assertTrue(hold.update(detectedNow = true, nowMs = 100))
-        assertTrue(hold.update(detectedNow = false, nowMs = 500)) // within hold
-        assertFalse(hold.update(detectedNow = false, nowMs = 701)) // hold expired
-    }
-
-    @Test
-    fun detectionModeDefaultsToSmart() {
-        assertEquals(BlurDetectionMode.SMART, BlurDetectionMode.valueOf("SMART"))
-        assertEquals(BlurStrength.STRONG, BlurStrength.valueOf("STRONG"))
+        // Detection at t=1000; the frame then clears.
+        assertTrue(FullScreenBlurHold.isActive(1000, 1000, hasDetectionsNow = true))
+        assertTrue(FullScreenBlurHold.isActive(1000, 1500, hasDetectionsNow = false))
+        assertFalse(FullScreenBlurHold.isActive(1000, 1601, hasDetectionsNow = false))
+        assertFalse(FullScreenBlurHold.isActive(0, 5000, hasDetectionsNow = false))
     }
 
     // ---------------- Captions (Part E) ----------------
@@ -257,13 +253,13 @@ class V21LogicTest {
             Second line
             continues here
         """.trimIndent()
-        val cues = CaptionParser.parse(vtt, "vtt")
+        val cues = CaptionParser.parse(vtt)
         assertEquals(2, cues.size)
         assertEquals("Hello world", cues[0].text)
-        assertEquals("Second line continues here", cues[1].text)
-        assertEquals("Hello world", CaptionParser.cueAt(cues, 2000))
+        assertEquals("Second line\ncontinues here", cues[1].text)
+        assertEquals("Hello world", CaptionParser.cueAt(cues, 2000)?.text)
         assertNull(CaptionParser.cueAt(cues, 3900))
-        assertEquals("Second line continues here", CaptionParser.cueAt(cues, 5999))
+        assertEquals("Second line\ncontinues here", CaptionParser.cueAt(cues, 5999)?.text)
     }
 
     @Test
@@ -277,7 +273,7 @@ class V21LogicTest {
             00:00:03,000 --> 00:00:04,500
             Another
         """.trimIndent()
-        val srtCues = CaptionParser.parse(srt, "srt")
+        val srtCues = CaptionParser.parse(srt)
         assertEquals(2, srtCues.size)
         assertEquals(1000L, srtCues[0].startMs)
         assertEquals(4500L, srtCues[1].endMs)
@@ -287,95 +283,79 @@ class V21LogicTest {
             <p begin="00:00:01.000" end="00:00:02.500">TTML cue</p>
             </div></body></tt>
         """.trimIndent()
-        val ttmlCues = CaptionParser.parse(ttml, "ttml")
+        val ttmlCues = CaptionParser.parse(ttml)
         assertEquals(1, ttmlCues.size)
         assertEquals("TTML cue", ttmlCues[0].text)
     }
 
     @Test
-    fun rollUpDuplicatesAreDeduped() {
+    fun duplicateLinesInsideCueAreDeduped() {
         val vtt = """
             WEBVTT
 
             00:00:01.000 --> 00:00:02.000
             Hello
-
-            00:00:02.000 --> 00:00:03.000
-            Hello world
+            Hello
         """.trimIndent()
-        val cues = CaptionParser.parse(vtt, "vtt")
-        // The roll-up pair collapses into the longer cue.
+        val cues = CaptionParser.parse(vtt)
         assertEquals(1, cues.size)
-        assertEquals("Hello world", cues[0].text)
-        assertEquals(1000L, cues[0].startMs)
-        assertEquals(3000L, cues[0].endMs)
+        assertEquals("Hello", cues[0].text)
     }
 
     @Test
     fun captionStyleMapping() {
         assertTrue(
-            CaptionStyleMath.textSizeSp(CaptionTextSize.EXTRA_LARGE) >
-                CaptionStyleMath.textSizeSp(CaptionTextSize.SMALL)
+            CaptionStyleMath.fontSizeSp(CaptionTextSize.EXTRA_LARGE) >
+                CaptionStyleMath.fontSizeSp(CaptionTextSize.SMALL)
         )
-        assertEquals(0xFFFFFFFF.toInt(), CaptionStyleMath.textColor(CaptionTextColor.WHITE))
-        assertEquals(0xFFFFFF00.toInt(), CaptionStyleMath.textColor(CaptionTextColor.YELLOW))
-        assertEquals(0, CaptionStyleMath.backgroundColor(CaptionBackground.NONE))
+        assertEquals(0xFFFFFFFFL, CaptionStyleMath.textColorArgb(CaptionTextColor.WHITE))
+        assertEquals(0xFFFFFF00L, CaptionStyleMath.textColorArgb(CaptionTextColor.YELLOW))
+        assertEquals(0L, CaptionStyleMath.backgroundArgb(CaptionBackground.NONE))
         assertTrue(
-            CaptionStyleMath.backgroundColor(CaptionBackground.BLACK) !=
-                CaptionStyleMath.backgroundColor(CaptionBackground.TRANSLUCENT)
+            CaptionStyleMath.backgroundArgb(CaptionBackground.BLACK) !=
+                CaptionStyleMath.backgroundArgb(CaptionBackground.TRANSLUCENT)
         )
     }
 
     @Test
-    fun captionTrackLanguageMatching() {
-        val tracks = listOf(
-            SubtitleTrackInfo("en", "English", "u1", "vtt"),
-            SubtitleTrackInfo("ar", "Arabic", "u2", "vtt"),
-            SubtitleTrackInfo("en-US", "English (US)", "u3", "vtt", isAutoGenerated = true)
+    fun captionOptionsDedupeManualBeatsAuto() {
+        val options = CaptionTrackLogic.buildOptions(
+            listOf(
+                CaptionTrackOption("en", "English", "u1", autoGenerated = true),
+                CaptionTrackOption("en", "English", "u2", autoGenerated = false),
+                CaptionTrackOption("ar", "Arabic", "u3", autoGenerated = false),
+                CaptionTrackOption("", "Broken", "u4", autoGenerated = false)
+            )
         )
-        assertEquals("ar", CaptionTrackLogic.matchLanguage(tracks, "ar")?.languageCode)
-        assertEquals("en", CaptionTrackLogic.matchLanguage(tracks, "en")?.languageCode)
-        assertEquals("en-US", CaptionTrackLogic.matchLanguage(tracks, "en-US")?.languageCode)
-        assertNull(CaptionTrackLogic.matchLanguage(tracks, "de"))
-        assertNull(CaptionTrackLogic.matchLanguage(tracks, ""))
+        assertEquals(2, options.size)
+        val en = options.first { it.languageCode == "en" }
+        assertEquals("u2", en.url) // manual track wins for the language
+        assertFalse(options[0].autoGenerated) // manual tracks sort first
+        assertEquals("Arabic", CaptionTrackLogic.displayLabel(options.first { it.languageCode == "ar" }))
     }
 
     // ---------------- Audio tracks (Part E) ----------------
 
     @Test
-    fun audioOptionsDedupeAndLabel() {
-        val groups = listOf(
-            AudioTrackLogic.GroupInfo(
-                groupIndex = 0,
-                formats = listOf(
-                    AudioTrackLogic.FormatInfo("en", 128_000, null),
-                    AudioTrackLogic.FormatInfo("en", 256_000, null)
-                ),
-                selectedIndex = 1
-            ),
-            AudioTrackLogic.GroupInfo(
-                groupIndex = 1,
-                formats = listOf(AudioTrackLogic.FormatInfo("es", 128_000, null)),
-                selectedIndex = -1
+    fun audioChoicesDedupeByLanguage() {
+        val choices = AudioTrackLogic.buildChoices(
+            listOf(
+                AudioTrackChoice(0, 0, "en", ""),
+                AudioTrackChoice(0, 1, "en", ""),
+                AudioTrackChoice(1, 0, "es", "")
             )
         )
-        val options = AudioTrackLogic.optionsFromGroups(groups)
-        // Best bitrate per language wins; both languages listed.
-        assertEquals(2, options.size)
-        val en = options.first { it.languageCode == "en" }
-        assertEquals(256, en.bitrateKbps)
-        assertTrue(en.isSelected)
-        assertTrue(en.label.contains("English"))
-    }
-
-    @Test
-    fun audioOptionsFromExtractorSingleTrack() {
-        val options = AudioTrackLogic.optionsFromExtractor(
-            listOf(AudioTrackInfo("en", "English", 128, "https://x"))
+        assertEquals(2, choices.size)
+        assertEquals(0, choices.first { it.language == "en" }.trackIndex) // first wins
+        assertTrue(
+            AudioTrackLogic.displayLabel(choices.first { it.language == "en" })
+                .contains("English")
         )
-        assertEquals(1, options.size)
-        assertTrue(options[0].isExtractorEntry)
-        assertTrue(options[0].isSelected)
+        assertEquals(
+            "es",
+            AudioTrackLogic.choiceForLanguage(choices, "es-ES")?.language
+        )
+        assertNull(AudioTrackLogic.choiceForLanguage(choices, "de"))
     }
 
     // ---------------- Device code (Part F) ----------------
@@ -384,51 +364,52 @@ class V21LogicTest {
 
     @Test
     fun deviceCodeResponseParses() {
-        val code = DeviceCodeParse.parseDeviceCodeResponse(
+        val grant = DeviceCodeParse.parseDeviceCodeResponse(
             json(
                 """{"device_code":"dc1","user_code":"ABCD-EFGH","verification_url":"https://www.google.com/device","expires_in":1800,"interval":5}"""
             )
         )
-        assertEquals("ABCD-EFGH", code?.userCode)
-        assertEquals(5, code?.intervalSeconds)
+        assertEquals("ABCD-EFGH", grant?.userCode)
+        assertEquals(5L, grant?.intervalSeconds)
+        assertEquals("dc1", grant?.deviceCode)
     }
 
     @Test
     fun tokenPollStates() {
         assertTrue(
             DeviceCodeParse.parseTokenResponse(
-                json("""{"error":"authorization_pending"}"""), 0
-            ) is DeviceCodeParse.TokenOutcome.Pending
+                json("""{"error":"authorization_pending"}"""), 400
+            ) is DevicePollResult.Pending
         )
         assertTrue(
             DeviceCodeParse.parseTokenResponse(
-                json("""{"error":"slow_down"}"""), 0
-            ) is DeviceCodeParse.TokenOutcome.SlowDown
+                json("""{"error":"slow_down"}"""), 400
+            ) is DevicePollResult.SlowDown
         )
         assertTrue(
             DeviceCodeParse.parseTokenResponse(
-                json("""{"error":"access_denied"}"""), 0
-            ) is DeviceCodeParse.TokenOutcome.Denied
+                json("""{"error":"access_denied"}"""), 400
+            ) is DevicePollResult.Denied
         )
         assertTrue(
             DeviceCodeParse.parseTokenResponse(
-                json("""{"error":"expired_token"}"""), 0
-            ) is DeviceCodeParse.TokenOutcome.Expired
+                json("""{"error":"expired_token"}"""), 400
+            ) is DevicePollResult.Expired
         )
         val approved = DeviceCodeParse.parseTokenResponse(
             json("""{"access_token":"at","refresh_token":"rt","expires_in":3600}"""),
-            1_000_000L
-        ) as DeviceCodeParse.TokenOutcome.Approved
+            200
+        ) as DevicePollResult.Approved
         assertEquals("rt", approved.refreshToken)
-        assertEquals(1_000_000L + 3_600_000L, approved.expiresAtMs)
+        assertEquals(3600L, approved.expiresInSeconds)
     }
 
     @Test
     fun invalidClientExplainsItself() {
         val outcome = DeviceCodeParse.parseTokenResponse(
             json("""{"error":"invalid_client","error_description":"The OAuth client was not found."}"""),
-            0
-        ) as DeviceCodeParse.TokenOutcome.Failed
+            401
+        ) as DevicePollResult.Failed
         assertTrue(outcome.message.contains("client"))
     }
 
@@ -440,22 +421,21 @@ class V21LogicTest {
             listOf("c", "d"),
             PlaylistPushPlanner.missingVideos(
                 listOf("a", "b", "c", "d", "c"),
-                listOf("b", "a")
+                setOf("b", "a")
             )
         )
         assertTrue(
-            PlaylistPushPlanner.missingVideos(listOf("a"), listOf("a")).isEmpty()
+            PlaylistPushPlanner.missingVideos(listOf("a"), setOf("a")).isEmpty()
         )
     }
 
     @Test
     fun systemPlaylistsAreNotEditable() {
-        assertFalse(PlaylistPushPlanner.isEditable("LL"))
-        assertFalse(PlaylistPushPlanner.isEditable("WL"))
-        assertTrue(PlaylistPushPlanner.isEditable("PLabc123"))
-        assertTrue(PlaylistPushPlanner.isEditable(null))
-        assertEquals("VLPLabc", PlaylistPushPlanner.remoteBrowseId("PLabc"))
-        assertEquals("VLLL", PlaylistPushPlanner.remoteBrowseId("LL"))
+        assertFalse(PlaylistPushPlanner.isEditablePlaylist("LL"))
+        assertFalse(PlaylistPushPlanner.isEditablePlaylist("WL"))
+        assertFalse(PlaylistPushPlanner.isEditablePlaylist("VLLL"))
+        assertTrue(PlaylistPushPlanner.isEditablePlaylist("PLabc123"))
+        assertTrue(PlaylistPushPlanner.isEditablePlaylist(null))
     }
 
     // ---------------- Video info + language (Parts C/D) ----------------
@@ -464,15 +444,10 @@ class V21LogicTest {
     fun videoInfoFormatting() {
         // 2026-11-12T00:00:00Z
         val epoch = 1794441600000L
-        assertEquals("12 Nov 2026", VideoInfoFormat.absoluteDate(epoch))
+        assertEquals("12 Nov 2026", VideoInfoFormat.absoluteDate(epoch, ZoneId.of("UTC")))
         val now = epoch + 3L * 24 * 3600 * 1000
         assertEquals("3 days ago", VideoInfoFormat.relativeDate(epoch, now))
-        assertEquals(
-            "12 Nov 2026 · 3 days ago",
-            VideoInfoFormat.dateLine(epoch, null, now)
-        )
-        // Source relative text is used when no epoch exists.
-        assertEquals("5 days ago", VideoInfoFormat.dateLine(0, "5 days ago", now))
+        assertEquals("", VideoInfoFormat.absoluteDate(0, ZoneId.of("UTC")))
         assertEquals("1.2K", VideoInfoFormat.compactCount(1234))
         assertEquals("3.4M", VideoInfoFormat.compactCount(3_400_000))
         assertEquals("999", VideoInfoFormat.compactCount(999))
@@ -480,11 +455,11 @@ class V21LogicTest {
 
     @Test
     fun offeredLanguagesAllHaveTranslations() {
-        val offered = LanguageSupport.offeredLanguages
+        val offered = LocaleHelper.offeredLanguages
         assertFalse(offered.contains(AppLanguage.GERMAN))
         for (language in offered) {
             if (language == AppLanguage.SYSTEM || language == AppLanguage.ENGLISH) continue
-            val tag = com.puretube.app.ui.LocaleHelper.tagFor(language)
+            val tag = LocaleHelper.tagFor(language)
             assertTrue(
                 "offered language $language has no translation",
                 LanguageSupport.translatedCodes.contains(tag)

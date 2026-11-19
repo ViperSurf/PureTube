@@ -271,10 +271,16 @@ class InnertubeClient(
     }
 
     /** Current video ids of an account playlist (for push diffing). */
-    suspend fun playlistVideoIds(playlistId: String): Result<List<String>> =
-        browse(
-            com.puretube.app.domain.PlaylistPushPlanner.remoteBrowseId(playlistId)
-        ).map { root -> InnertubeParse.parseVideos(root).map { it.videoId } }
+    suspend fun playlistVideoIds(playlistId: String): Result<List<String>> {
+        val browseId = when {
+            playlistId.startsWith("VL") -> playlistId
+            playlistId == "LL" -> "VLLL"
+            playlistId == "WL" -> "VLWL"
+            else -> "VL$playlistId"
+        }
+        return browse(browseId)
+            .map { root -> InnertubeParse.parseVideos(root).map { it.videoId } }
+    }
 
     // ------------------------------------------------------------------
     // Watch-history beacon (v2.1, best-effort)

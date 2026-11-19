@@ -97,7 +97,7 @@ class AccountRepository(
 
     /** Step 1: ask Google for a user code to show in the app. */
     suspend fun beginDeviceSignIn():
-        Result<com.puretube.app.domain.DeviceCodeParse.DeviceCode> {
+        Result<com.puretube.app.domain.DeviceCodeGrant> {
         val client = oauthClient ?: return Result.failure(
             IllegalStateException("Device sign-in is unavailable.")
         )
@@ -111,14 +111,14 @@ class AccountRepository(
      * outcomes pass through for the UI's waiting/denied/expired states.
      */
     suspend fun pollDeviceSignIn(
-        code: com.puretube.app.domain.DeviceCodeParse.DeviceCode
-    ): Result<com.puretube.app.domain.DeviceCodeParse.TokenOutcome> {
+        code: com.puretube.app.domain.DeviceCodeGrant
+    ): Result<com.puretube.app.domain.DevicePollResult> {
         val client = oauthClient ?: return Result.failure(
             IllegalStateException("Device sign-in is unavailable.")
         )
         val outcome = client.pollOnce(code.deviceCode)
             .getOrElse { return Result.failure(it) }
-        if (outcome is com.puretube.app.domain.DeviceCodeParse.TokenOutcome.Approved) {
+        if (outcome is com.puretube.app.domain.DevicePollResult.Approved) {
             if (!cookieStore.isAvailable) {
                 return Result.failure(
                     IllegalStateException(
@@ -134,9 +134,10 @@ class AccountRepository(
                     name = account.name,
                     avatarUrl = account.avatarUrl,
                     handle = account.handle,
-                    refreshToken = outcome.refreshToken.orEmpty(),
+                    refreshToken = outcome.refreshToken,
                     accessToken = outcome.accessToken,
-                    accessTokenExpiresAtMs = outcome.expiresAtMs
+                    accessTokenExpiresAtMs = System.currentTimeMillis() +
+                        outcome.expiresInSeconds * 1000L
                 )
             )
             _state.value = AccountState(
@@ -164,12 +165,14 @@ class AccountRepository(
         if (stored.refreshToken.isBlank()) return null
         val client = oauthClient ?: return null
         val outcome = client.refresh(stored.refreshToken).getOrNull()
-        if (outcome is com.puretube.app.domain.DeviceCodeParse.TokenOutcome.Approved) {
+        if (outcome is com.puretube.app.domain.DevicePollResult.Approved) {
             cookieStore.save(
                 stored.copy(
                     accessToken = outcome.accessToken,
-                    accessTokenExpiresAtMs = outcome.expiresAtMs,
-                    refreshToken = outcome.refreshToken ?: stored.refreshToken
+                    accessTokenExpiresAtMs = System.currentTimeMillis() +
+                        outcome.expiresInSeconds * 1000L,
+                    // Refresh responses omit refresh_token; keep the old one.
+                    refreshToken = outcome.refreshToken.ifBlank { stored.refreshToken }
                 )
             )
             return outcome.accessToken

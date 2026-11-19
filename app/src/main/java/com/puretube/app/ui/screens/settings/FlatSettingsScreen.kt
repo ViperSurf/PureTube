@@ -252,12 +252,12 @@ fun FlatSettingsScreen() {
         // strings and is no longer offered), apply the locale for real,
         // and recreate the activity on pre-API 33 devices so the change
         // is visible immediately (API 33+ recreates via LocaleManager).
-        val offered = com.puretube.app.domain.LanguageSupport.offeredLanguages
+        val offered = com.puretube.app.LocaleHelper.offeredLanguages
         val current = offered.indexOf(prefs.appLanguage).let { if (it < 0) 0 else it }
         val next = offered[(current + 1) % offered.size]
         scope.launch {
             app.preferences.update { it.copy(appLanguage = next) }
-            com.puretube.app.ui.LocaleHelper.apply(context, next)
+            com.puretube.app.LocaleHelper.apply(context, next)
             if (android.os.Build.VERSION.SDK_INT <
                 android.os.Build.VERSION_CODES.TIRAMISU
             ) {

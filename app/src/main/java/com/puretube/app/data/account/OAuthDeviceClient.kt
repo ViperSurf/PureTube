@@ -49,7 +49,7 @@ class OAuthDeviceClient(private val okHttpClient: OkHttpClient) {
     }
 
     /** Step 1: request a device/user code pair to show the user. */
-    suspend fun requestDeviceCode(): Result<DeviceCodeParse.DeviceCode> =
+    suspend fun requestDeviceCode(): Result<com.puretube.app.domain.DeviceCodeGrant> =
         withContext(Dispatchers.IO) {
             runCatching {
                 val (_, text) = postForm(
@@ -65,10 +65,10 @@ class OAuthDeviceClient(private val okHttpClient: OkHttpClient) {
         }
 
     /** Step 2 (repeated): poll once for the user's approval. */
-    suspend fun pollOnce(deviceCode: String): Result<DeviceCodeParse.TokenOutcome> =
+    suspend fun pollOnce(deviceCode: String): Result<com.puretube.app.domain.DevicePollResult> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val (_, text) = postForm(
+                val (code, text) = postForm(
                     TOKEN_URL,
                     mapOf(
                         "client_id" to CLIENT_ID,
@@ -77,17 +77,16 @@ class OAuthDeviceClient(private val okHttpClient: OkHttpClient) {
                     )
                 )
                 DeviceCodeParse.parseTokenResponse(
-                    json.parseToJsonElement(text).jsonObject,
-                    System.currentTimeMillis()
+                    json.parseToJsonElement(text).jsonObject, code
                 )
             }
         }
 
     /** Exchanges the stored refresh token for a fresh access token. */
-    suspend fun refresh(refreshToken: String): Result<DeviceCodeParse.TokenOutcome> =
+    suspend fun refresh(refreshToken: String): Result<com.puretube.app.domain.DevicePollResult> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val (_, text) = postForm(
+                val (code, text) = postForm(
                     TOKEN_URL,
                     mapOf(
                         "client_id" to CLIENT_ID,
@@ -96,8 +95,7 @@ class OAuthDeviceClient(private val okHttpClient: OkHttpClient) {
                     )
                 )
                 DeviceCodeParse.parseTokenResponse(
-                    json.parseToJsonElement(text).jsonObject,
-                    System.currentTimeMillis()
+                    json.parseToJsonElement(text).jsonObject, code
                 )
             }
         }
