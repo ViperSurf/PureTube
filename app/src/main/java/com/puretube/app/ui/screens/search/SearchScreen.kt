@@ -120,7 +120,7 @@ fun SearchScreen(
 
     fun countStatus() {
         session.status = if (session.hits.isEmpty()) {
-            "No results. Shorts and blocked items are filtered out."
+            "No results"
         } else {
             "${session.hits.size} results${if (session.hasMore) "+" else ""}"
         }
@@ -140,6 +140,7 @@ fun SearchScreen(
                 }
             }
             val blocked = blockedLists()
+            session.errorDetail = ""
             app.streamRepository.search(q, session.filter)
                 .onSuccess { page ->
                     session.hits = filtered(page.hits, blocked)
@@ -153,6 +154,11 @@ fun SearchScreen(
                     session.hits = emptyList()
                     session.hasMore = false
                     session.hasSearched = true
+                    // A failure shows its class + top stack frames so a
+                    // pasted report identifies the exact line; a genuinely
+                    // empty result is "No results" above, never this.
+                    session.errorDetail =
+                        com.puretube.app.domain.ErrorDetail.withStack(error, frames = 5)
                     session.status = "Search failed: ${ErrorText.describe(error, 300)}"
                 }
             session.loading = false
@@ -278,6 +284,25 @@ fun SearchScreen(
             CircularProgressIndicator(modifier = Modifier.padding(vertical = 12.dp))
         }
         Text(session.status, color = PureTextSecondary, fontSize = 13.sp)
+        if (session.errorDetail.isNotBlank()) {
+            Text(
+                session.errorDetail, color = PureTextSecondary, fontSize = 11.sp,
+                lineHeight = 15.sp, modifier = Modifier.padding(top = 4.dp)
+            )
+            TextButton(onClick = {
+                runCatching {
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(
+                        android.content.ClipData.newPlainText(
+                            "PureTube search diagnostics",
+                            "Query: ${session.query}\nFilter: ${session.filter}\n${session.errorDetail}"
+                        )
+                    )
+                    session.status = "Diagnostics copied"
+                }
+            }) { Text("Copy diagnostics", fontSize = 12.sp) }
+        }
 
         val showRecent = !session.hasSearched && session.query.isBlank() &&
             prefs.searchHistoryEnabled && searchHistory.isNotEmpty()

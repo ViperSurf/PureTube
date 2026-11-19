@@ -19,6 +19,8 @@ class SearchSession {
     var hasSearched by mutableStateOf(false)
     var hasMore by mutableStateOf(false)
     var status by mutableStateOf("Search YouTube without Shorts, tracking, or recommendations.")
+    /** Full failure detail (class chain + top stack frames) for Copy Diagnostics. */
+    var errorDetail by mutableStateOf("")
     var loading by mutableStateOf(false)
     var loadingMore by mutableStateOf(false)
     var scrollIndex by mutableStateOf(0)

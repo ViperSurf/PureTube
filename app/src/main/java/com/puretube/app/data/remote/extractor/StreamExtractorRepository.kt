@@ -20,6 +20,12 @@ import org.schabi.newpipe.extractor.services.youtube.linkHandler.YoutubeSearchQu
 import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import com.puretube.app.domain.CommentItem
+import com.puretube.app.domain.ExtractorItemMapper
+import com.puretube.app.domain.RawChannelItem
+import com.puretube.app.domain.RawCommentItem
+import com.puretube.app.domain.RawPlaylistItem
+import com.puretube.app.domain.RawStreamItem
+import com.puretube.app.domain.RawThumb
 import com.puretube.app.domain.ErrorText
 import com.puretube.app.domain.FailoverLog
 import com.puretube.app.domain.PlaylistUrl
@@ -39,6 +45,8 @@ data class ResolvedVideoStream(
     val videoStreamUrl: String?,
     val audioOnlyStreamUrl: String,
     val thumbnailUrl: String,
+    /** Video description text (v1.3); empty when the source has none. */
+    val description: String = "",
     /** Which failover stage produced this stream (v1.2 diagnostics). */
     val sourceStage: String = "",
     /** One line per stage tried, in order (v1.2 diagnostics). */
@@ -216,19 +224,20 @@ class StreamExtractorRepository(
         preferredAudioLanguageCode: String?
     ): ResolvedVideoStream {
         val info = StreamInfo.getInfo(ServiceList.YouTube, canonicalUrl)
+        val audioStreams = safe { info.audioStreams }?.filterNotNull().orEmpty()
         val bestAudio = runCatching {
             val matching = preferredAudioLanguageCode?.let { code ->
-                info.audioStreams.filter {
+                audioStreams.filter {
                     runCatching { it.audioLocale?.language == code }.getOrDefault(false)
                 }
             }.orEmpty()
             (matching.maxByOrNull { it.averageBitrate }
-                ?: info.audioStreams.maxByOrNull { it.averageBitrate })
+                ?: audioStreams.maxByOrNull { it.averageBitrate })
                 ?.content
-        }.getOrNull() ?: info.audioStreams.maxByOrNull { it.averageBitrate }?.content
+        }.getOrNull() ?: audioStreams.maxByOrNull { it.averageBitrate }?.content
             ?: error("No audio stream found")
 
-        val bestVideo = info.videoOnlyStreams
+        val bestVideo = (safe { info.videoOnlyStreams }?.filterNotNull().orEmpty())
             .filter { parseHeight(it.resolution) <= preferredMaxHeight || preferredMaxHeight <= 0 }
             .sortedWith(
                 compareByDescending<org.schabi.newpipe.extractor.stream.VideoStream> {
@@ -241,26 +250,31 @@ class StreamExtractorRepository(
                 }.thenByDescending { parseHeight(it.resolution) }
             )
             .firstOrNull()?.content
-            ?: info.videoStreams.firstOrNull()?.content
+            ?: (safe { info.videoStreams }?.filterNotNull()?.firstOrNull()?.content)
 
-        if (bestVideo == null && info.dashMpdUrl.isNullOrBlank() && info.hlsUrl.isNullOrBlank()) {
+        val dashUrl = safe { info.dashMpdUrl }
+        val hlsUrlValue = safe { info.hlsUrl }
+        if (bestVideo == null && dashUrl.isNullOrBlank() && hlsUrlValue.isNullOrBlank()) {
             error("Extractor returned no playable streams")
         }
 
         return ResolvedVideoStream(
             videoId = videoId,
-            title = info.name,
-            uploaderName = info.uploaderName,
-            uploaderId = info.uploaderUrl.substringAfterLast("/"),
-            uploaderAvatarUrl = info.uploaderAvatars.firstOrNull()?.url.orEmpty(),
-            durationSeconds = info.duration,
-            viewCount = info.viewCount,
-            likeCount = info.likeCount,
-            dashManifestUrl = info.dashMpdUrl.takeIf { it.isNotBlank() },
-            hlsUrl = info.hlsUrl.takeIf { it.isNotBlank() },
+            title = safe { info.name }.orEmpty(),
+            uploaderName = safe { info.uploaderName }.orEmpty(),
+            uploaderId = safe { info.uploaderUrl }?.substringAfterLast("/").orEmpty(),
+            uploaderAvatarUrl = imageThumbs(safe { info.uploaderAvatars })
+                .maxByOrNull { it.height }?.url.orEmpty(),
+            durationSeconds = safe { info.duration } ?: 0L,
+            viewCount = safe { info.viewCount } ?: 0L,
+            likeCount = safe { info.likeCount } ?: 0L,
+            dashManifestUrl = dashUrl?.takeIf { it.isNotBlank() },
+            hlsUrl = hlsUrlValue?.takeIf { it.isNotBlank() },
             videoStreamUrl = bestVideo,
             audioOnlyStreamUrl = bestAudio,
-            thumbnailUrl = info.thumbnails.maxByOrNull { it.height }?.url.orEmpty()
+            thumbnailUrl = imageThumbs(safe { info.thumbnails })
+                .maxByOrNull { it.height }?.url.orEmpty(),
+            description = safe { info.description?.content }.orEmpty()
         )
     }
 
@@ -300,7 +314,8 @@ class StreamExtractorRepository(
                 hlsUrl = hls,
                 videoStreamUrl = videoUrl,
                 audioOnlyStreamUrl = audioUrl.orEmpty(),
-                thumbnailUrl = root["thumbnailUrl"]?.jsonPrimitive?.content.orEmpty()
+                thumbnailUrl = root["thumbnailUrl"]?.jsonPrimitive?.content.orEmpty(),
+                description = root["description"]?.jsonPrimitive?.content.orEmpty()
             )
         }
     }
@@ -343,7 +358,8 @@ class StreamExtractorRepository(
                 hlsUrl = hls,
                 videoStreamUrl = progressive,
                 audioOnlyStreamUrl = audioUrl.orEmpty(),
-                thumbnailUrl = thumbs.lastOrNull()?.jsonObject?.get("url")?.jsonPrimitive?.content.orEmpty()
+                thumbnailUrl = thumbs.lastOrNull()?.jsonObject?.get("url")?.jsonPrimitive?.content.orEmpty(),
+                description = root["description"]?.jsonPrimitive?.content.orEmpty()
             )
         }
     }
@@ -358,31 +374,75 @@ class StreamExtractorRepository(
     private fun searchHandler(query: String, filter: SearchTypeFilter): SearchQueryHandler =
         ServiceList.YouTube.searchQHFactory.fromQuery(query, listOf(filter.factoryValue), "")
 
+    /**
+     * v1.3 NPE fix: EVERY extractor getter is treated as nullable. Java
+     * platform getters on NewPipe InfoItems are annotated @Nonnull but can
+     * return null at runtime for item shapes the typed searches return
+     * (e.g. a channel result with no thumbnails list, a stream item with no
+     * uploader avatars); Kotlin's intrinsic null-check on the platform type
+     * then threw "NullPointerException: getOrDefault (.) must not be null"
+     * (and sibling messages) and failed the WHOLE search. Now each field is
+     * read into a nullable local via [safe], mapping happens on raw holders
+     * in [ExtractorItemMapper], and each item is mapped inside its own
+     * runCatching in mapNotNull — one bad item is skipped, never fatal.
+     */
+    private fun <T> safe(block: () -> T?): T? = runCatching(block).getOrNull()
+
+    private fun imageThumbs(
+        images: List<org.schabi.newpipe.extractor.Image>?
+    ): List<RawThumb> = images.orEmpty().mapNotNull { img ->
+        val url = safe { img.url } ?: return@mapNotNull null
+        RawThumb(url = url, height = safe { img.height } ?: 0)
+    }
+
+    private fun StreamInfoItem.toRaw(): RawStreamItem = RawStreamItem(
+        url = safe { url },
+        name = safe { name },
+        uploaderName = safe { uploaderName },
+        uploaderUrl = safe { uploaderUrl },
+        thumbnails = imageThumbs(safe { thumbnails }),
+        uploaderAvatars = imageThumbs(safe { uploaderAvatars }),
+        durationSeconds = safe { duration } ?: 0L,
+        isShortForm = safe { isShortFormContent } ?: false,
+        uploadEpochMs = safe { uploadDate?.offsetDateTime()?.toInstant()?.toEpochMilli() } ?: 0L
+    )
+
+    private fun ChannelInfoItem.toRaw(): RawChannelItem = RawChannelItem(
+        url = safe { url },
+        name = safe { name },
+        thumbnails = imageThumbs(safe { thumbnails }),
+        subscriberCount = safe { subscriberCount } ?: -1L,
+        description = safe { description }
+    )
+
+    private fun PlaylistInfoItem.toRaw(): RawPlaylistItem = RawPlaylistItem(
+        url = safe { url },
+        name = safe { name },
+        uploaderName = safe { uploaderName },
+        thumbnails = imageThumbs(safe { thumbnails }),
+        streamCount = safe { streamCount } ?: 0L
+    )
+
     private fun org.schabi.newpipe.extractor.InfoItem.toHit(): SearchHit? = when (this) {
-        is StreamInfoItem -> SearchHit(SearchHitType.VIDEO, video = toFeedItem())
-        is ChannelInfoItem -> SearchHit(
-            SearchHitType.CHANNEL,
-            channel = ChannelHit(
-                channelId = url.substringAfterLast("/"),
-                name = name,
-                avatarUrl = thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
-                subscriberCount = runCatching { subscriberCount }.getOrDefault(-1L),
-                description = runCatching { description }.getOrDefault(""),
-                url = url
-            )
-        )
-        is PlaylistInfoItem -> SearchHit(
-            SearchHitType.PLAYLIST,
-            playlist = PlaylistHit(
-                url = url,
-                title = name,
-                channelName = runCatching { uploaderName }.getOrDefault(""),
-                thumbnailUrl = thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
-                streamCount = runCatching { streamCount }.getOrDefault(0L)
-            )
-        )
+        is StreamInfoItem -> ExtractorItemMapper.toFeedItem(toRaw()) { extractVideoId(it) }
+            ?.let { SearchHit(SearchHitType.VIDEO, video = it) }
+        is ChannelInfoItem -> ExtractorItemMapper.toChannelHit(toRaw())
+            ?.let { SearchHit(SearchHitType.CHANNEL, channel = it) }
+        is PlaylistInfoItem -> ExtractorItemMapper.toPlaylistHit(toRaw())
+            ?.let { SearchHit(SearchHitType.PLAYLIST, playlist = it) }
         else -> null
     }
+
+    /** Per-item isolation: a throwing item maps to null and is skipped. */
+    private fun <T : org.schabi.newpipe.extractor.InfoItem> List<T>.mapHitsSafe(): List<SearchHit> =
+        mapNotNull { item -> runCatching { item.toHit() }.getOrNull() }
+
+    private fun List<StreamInfoItem>.mapFeedSafe(): List<FeedItem> =
+        mapNotNull { item ->
+            runCatching {
+                ExtractorItemMapper.toFeedItem(item.toRaw()) { extractVideoId(it) }
+            }.getOrNull()
+        }
 
     /** First page of a typed search. Remembers handler + next page for [searchMore]. */
     suspend fun search(
@@ -393,10 +453,11 @@ class StreamExtractorRepository(
             val handler = searchHandler(query, filter)
             val info = SearchInfo.getInfo(ServiceList.YouTube, handler)
             lastSearchHandler = handler
-            lastSearchNextPage = if (info.hasNextPage()) info.nextPage else null
+            val hasMore = safe { info.hasNextPage() } ?: false
+            lastSearchNextPage = if (hasMore) safe { info.nextPage } else null
             SearchPageResult(
-                hits = info.relatedItems.mapNotNull { it.toHit() },
-                hasMore = info.hasNextPage()
+                hits = safe { info.relatedItems }?.filterNotNull().orEmpty().mapHitsSafe(),
+                hasMore = hasMore
             )
         }
     }
@@ -407,10 +468,10 @@ class StreamExtractorRepository(
             val handler = lastSearchHandler ?: error("No active search")
             val page = lastSearchNextPage ?: return@runCatching SearchPageResult(emptyList(), false)
             val more = SearchInfo.getMoreItems(ServiceList.YouTube, handler, page)
-            lastSearchNextPage = more.nextPage
+            lastSearchNextPage = safe { more.nextPage }
             SearchPageResult(
-                hits = more.items.mapNotNull { it.toHit() },
-                hasMore = more.nextPage != null
+                hits = safe { more.items }?.filterNotNull().orEmpty().mapHitsSafe(),
+                hasMore = lastSearchNextPage != null
             )
         }
     }
@@ -427,24 +488,8 @@ class StreamExtractorRepository(
             page.hits.mapNotNull { it.video }
         }
 
-    private fun StreamInfoItem.toFeedItem(): FeedItem = FeedItem(
-        videoId = extractVideoId(url),
-        title = name,
-        channelName = uploaderName,
-        channelId = uploaderUrl?.substringAfterLast("/") ?: "",
-        thumbnailUrl = thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
-        durationSeconds = duration,
-        url = url,
-        isShort = url.contains("/shorts/") ||
-            runCatching { isShortFormContent }.getOrDefault(false),
-        // Extractor 0.27 no longer exposes a per-item like count; -1 = unknown.
-        channelAvatarUrl = runCatching {
-            uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
-        }.getOrDefault(""),
-        uploadEpochMs = runCatching {
-            uploadDate?.offsetDateTime()?.toInstant()?.toEpochMilli() ?: 0L
-        }.getOrDefault(0L)
-    )
+    private fun StreamInfoItem.toFeedItem(): FeedItem? =
+        ExtractorItemMapper.toFeedItem(toRaw()) { extractVideoId(it) }
 
     /** Best-effort content-country localization for the extractor. */
     fun configureContentCountry(countryCode: String?) {
@@ -465,30 +510,36 @@ class StreamExtractorRepository(
                 val info = org.schabi.newpipe.extractor.channel.ChannelInfo
                     .getInfo(ServiceList.YouTube, url)
                 val videos = runCatching {
-                    val tab = info.tabs.firstOrNull() ?: return@runCatching emptyList()
+                    val tab = safe { info.tabs }?.filterNotNull()?.firstOrNull()
+                        ?: return@runCatching emptyList()
                     val tabInfo = org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
                         .getInfo(ServiceList.YouTube, tab)
-                    val items = tabInfo.relatedItems.filterIsInstance<StreamInfoItem>()
-                        .map { it.toFeedItem() }.toMutableList()
-                    var page = if (tabInfo.hasNextPage()) tabInfo.nextPage else null
+                    val items = safe { tabInfo.relatedItems }
+                        ?.filterIsInstance<StreamInfoItem>().orEmpty()
+                        .mapFeedSafe().toMutableList()
+                    var page = if (safe { tabInfo.hasNextPage() } == true) {
+                        safe { tabInfo.nextPage }
+                    } else null
                     var pages = 0
                     while (page != null && pages < 2) {
                         val more = runCatching {
                             org.schabi.newpipe.extractor.channel.tabs.ChannelTabInfo
                                 .getMoreItems(ServiceList.YouTube, tab, page)
                         }.getOrNull() ?: break
-                        items += more.items.filterIsInstance<StreamInfoItem>()
-                            .map { it.toFeedItem() }
-                        page = more.nextPage
+                        items += safe { more.items }
+                            ?.filterIsInstance<StreamInfoItem>().orEmpty()
+                            .mapFeedSafe()
+                        page = safe { more.nextPage }
                         pages++
                     }
                     com.puretube.app.domain.PageMerger.dedupe(items)
                 }.getOrDefault(emptyList())
                 ChannelPayload(
-                    channelId = info.url.substringAfterLast("/"),
-                    channelName = info.name,
-                    avatarUrl = info.avatars.maxByOrNull { it.height }?.url.orEmpty(),
-                    subscriberCount = runCatching { info.subscriberCount }.getOrDefault(-1L),
+                    channelId = safe { info.url }?.substringAfterLast("/").orEmpty(),
+                    channelName = safe { info.name }.orEmpty(),
+                    avatarUrl = imageThumbs(safe { info.avatars })
+                        .maxByOrNull { it.height }?.url.orEmpty(),
+                    subscriberCount = safe { info.subscriberCount } ?: -1L,
                     videos = videos
                 )
             }
@@ -512,20 +563,20 @@ class StreamExtractorRepository(
                 val url = normalizeAndStripShortsUrl(videoId)
                 val info = org.schabi.newpipe.extractor.comments.CommentsInfo
                     .getInfo(ServiceList.YouTube, url)
-                if (info.isCommentsDisabled) return@runCatching emptyList()
-                info.relatedItems.map { item ->
-                    CommentItem(
-                        id = runCatching { item.commentId }.getOrDefault(""),
-                        authorName = runCatching { item.uploaderName }.getOrDefault(""),
-                        authorChannelId = runCatching {
-                            item.uploaderUrl?.substringAfterLast("/") ?: ""
-                        }.getOrDefault(""),
-                        text = runCatching { item.commentText.content }.getOrDefault(""),
-                        likeCount = runCatching { item.likeCount }.getOrDefault(-1),
-                        avatarUrl = runCatching {
-                            item.uploaderAvatars.maxByOrNull { it.height }?.url.orEmpty()
-                        }.getOrDefault("")
-                    )
+                if (safe { info.isCommentsDisabled } == true) return@runCatching emptyList()
+                safe { info.relatedItems }?.filterNotNull().orEmpty().mapNotNull { item ->
+                    runCatching {
+                        ExtractorItemMapper.toCommentItem(
+                            RawCommentItem(
+                                commentId = safe { item.commentId },
+                                uploaderName = safe { item.uploaderName },
+                                uploaderUrl = safe { item.uploaderUrl },
+                                text = safe { item.commentText?.content },
+                                likeCount = safe { item.likeCount } ?: -1,
+                                uploaderAvatars = imageThumbs(safe { item.uploaderAvatars })
+                            )
+                        )
+                    }.getOrNull()
                 }
             }
         }
@@ -546,32 +597,36 @@ class StreamExtractorRepository(
         runCatching {
             val canonical = PlaylistUrl.canonical(url)
             val info = PlaylistInfo.getInfo(ServiceList.YouTube, canonical)
-            val items = info.relatedItems.map { it.toFeedItem() }.toMutableList()
-            var page: Page? = if (info.hasNextPage()) info.nextPage else null
+            val items = safe { info.relatedItems }?.filterNotNull().orEmpty()
+                .filterIsInstance<StreamInfoItem>().mapFeedSafe().toMutableList()
+            var page: Page? = if (safe { info.hasNextPage() } == true) safe { info.nextPage } else null
             var fetched = 0
             while (page != null && fetched < maxPages) {
                 val more = runCatching {
                     PlaylistInfo.getMoreItems(ServiceList.YouTube, canonical, page)
                 }.getOrNull() ?: break
-                items += more.items.map { it.toFeedItem() }
-                page = more.nextPage
+                items += safe { more.items }?.filterNotNull().orEmpty()
+                    .filterIsInstance<StreamInfoItem>().mapFeedSafe()
+                page = safe { more.nextPage }
                 fetched++
             }
             val videos = com.puretube.app.domain.PageMerger.dedupe(items)
+            val infoErrors = safe { info.errors }?.filterNotNull().orEmpty()
             val warning = when {
-                videos.isEmpty() && info.errors.isNotEmpty() ->
-                    "Extractor reported: " + info.errors.joinToString("; ") { ErrorText.describe(it, 160) }
+                videos.isEmpty() && infoErrors.isNotEmpty() ->
+                    "Extractor reported: " + infoErrors.joinToString("; ") { ErrorText.describe(it, 160) }
                 videos.isEmpty() ->
                     "The extractor returned no videos for this playlist. It may be private, a mix, or an unsupported link type."
                 else -> null
             }
             RemotePlaylistPayload(
                 url = canonical,
-                title = info.name,
-                channelName = runCatching { info.uploaderName }.getOrDefault(""),
-                thumbnailUrl = info.thumbnails.maxByOrNull { it.height }?.url.orEmpty(),
+                title = safe { info.name }.orEmpty(),
+                channelName = safe { info.uploaderName }.orEmpty(),
+                thumbnailUrl = imageThumbs(safe { info.thumbnails })
+                    .maxByOrNull { it.height }?.url.orEmpty(),
                 videos = videos,
-                streamCount = runCatching { info.streamCount }.getOrDefault(videos.size.toLong()),
+                streamCount = safe { info.streamCount } ?: videos.size.toLong(),
                 warning = warning
             )
         }
