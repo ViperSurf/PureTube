@@ -478,7 +478,8 @@ fun buildProtectedThumbnailRequest(
                 isManuallyPeeked = peeked,
                 channelId = channelId,
                 channelName = channelName,
-                exemptChannelKeys = exemptChannelKeys
+                exemptChannelKeys = exemptChannelKeys,
+                blurScope = prefs.blurScope
             )
         )
     }

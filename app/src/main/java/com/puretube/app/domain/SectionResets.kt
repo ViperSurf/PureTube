@@ -28,6 +28,7 @@ object SectionResets {
                 blurTargetGender = d.blurTargetGender,
                 protectedMediaType = d.protectedMediaType,
                 blurVisualStyle = d.blurVisualStyle,
+                blurScope = d.blurScope,
                 detectionSensitivity = d.detectionSensitivity,
                 blurIntensityRadius = d.blurIntensityRadius,
                 zeroFlashSafePreBlur = d.zeroFlashSafePreBlur,
@@ -59,7 +60,8 @@ object SectionResets {
                 controlsVisibility = d.controlsVisibility,
                 autoRotatePlayer = d.autoRotatePlayer,
                 unmuteRaisesVolume = d.unmuteRaisesVolume,
-                keepVideoPinnedWhileScrolling = d.keepVideoPinnedWhileScrolling
+                keepVideoPinnedWhileScrolling = d.keepVideoPinnedWhileScrolling,
+                swipeBrightnessVolumeControls = d.swipeBrightnessVolumeControls
             )
             SECTION_3 -> state.copy(
                 stripShortsEverywhere = d.stripShortsEverywhere,

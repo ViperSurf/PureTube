@@ -27,7 +27,11 @@ data class SamplerDiagnostics(
     val framesSampled: Long = 0L,
     val lastFrameBrightness: Int = -1,
     val lastDetectionCount: Int = -1,
-    val lastError: String? = null
+    val lastError: String? = null,
+    /** v1.5: which detection pass produced the last faces — "full", "tiled", "upscale", "none". */
+    val lastPassType: String = "none",
+    /** v1.5: cumulative regions detected since sampling started. */
+    val totalDetections: Long = 0L
 )
 
 /**
@@ -44,9 +48,15 @@ data class SamplerDiagnostics(
  *
  * v1.4: the player renders into a TextureView (Player.setVideoTextureView)
  * and the sampler copies frames with TextureView.getBitmap() into the
- * fixed 320x180 buffer on its own coroutine — NO PixelCopy anywhere.
+ * fixed buffer on its own coroutine — NO PixelCopy anywhere.
  * TextureView keeps its frames in a regular texture the app can read
  * back, which is exactly what a sampler needs.
+ *
+ * v1.5: the buffer is 640x360 (was 320x180) so small faces survive the
+ * downsample, and the engine's tiled second pass runs at a reduced
+ * cadence: only after two consecutive full-frame passes found nothing
+ * (roughly every 3rd sample), with the 450 ms hysteresis tracker
+ * bridging the gaps so boxes don't flicker between passes.
  *
  * Defensive by design (kept from v1.1 hardening):
  * - The whole sampling loop is wrapped in runCatching; any failure
@@ -64,8 +74,11 @@ class VideoFrameSampler(
     private val diagnosticsFlow: MutableStateFlow<SamplerDiagnostics>? = null
 ) {
     private val sampleBufferBitmap: Bitmap? = runCatching {
-        Bitmap.createBitmap(320, 180, Bitmap.Config.ARGB_8888)
+        Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
     }.getOrNull()
+
+    /** Consecutive full-frame passes that found nothing (drives the tiled cadence). */
+    @Volatile private var consecutiveEmptyFullPasses: Int = 0
     private val tracker = BoundingBoxTracker(holdMs = 450L, alpha = 0.65f)
 
     private val _activeBlurRegions = MutableStateFlow<List<DetectedBlurRegion>>(emptyList())
@@ -137,17 +150,28 @@ class VideoFrameSampler(
                         val copied = if (buffer != null) copyFrame(textureView, buffer) else false
                         if (copied && buffer != null) {
                             val brightness = meanBrightness(buffer)
+                            // Tiled pass cadence: only after 2 consecutive
+                            // empty full-frame passes (about every 3rd sample).
+                            val allowTiled = consecutiveEmptyFullPasses >= 2
                             val detected = runCatching {
                                 haramBlurEngine.detectRegionsToBlur(
                                     sourceBitmap = buffer,
                                     targetGender = prefs.blurTargetGender,
-                                    sensitivity = prefs.detectionSensitivity
+                                    sensitivity = prefs.detectionSensitivity,
+                                    blurScope = prefs.blurScope,
+                                    allowTiledRetry = allowTiled
                                 )
                             }.getOrElse { e ->
                                 publishDiagnostics {
                                     it.copy(lastError = "${e::class.simpleName}: ${e.message ?: "detection failed"}")
                                 }
                                 emptyList()
+                            }
+                            val passType = haramBlurEngine.lastPassType
+                            consecutiveEmptyFullPasses = when {
+                                detected.isNotEmpty() -> 0
+                                passType == "tiled" || passType == "upscale" -> 0
+                                else -> consecutiveEmptyFullPasses + 1
                             }
                             _activeBlurRegions.value = runCatching {
                                 tracker.onDetections(detected)
@@ -158,7 +182,9 @@ class VideoFrameSampler(
                                     framesSampled = it.framesSampled + 1,
                                     lastFrameBrightness = brightness,
                                     lastDetectionCount = detected.size,
-                                    lastError = null
+                                    lastError = null,
+                                    lastPassType = passType,
+                                    totalDetections = it.totalDetections + detected.size
                                 )
                             }
                         }
@@ -191,7 +217,7 @@ class VideoFrameSampler(
     }
 
     /**
-     * Copies the TextureView's current frame into [buffer] (320x180).
+     * Copies the TextureView's current frame into [buffer] (640x360).
      * TextureView.getBitmap(Bitmap) scales into the supplied bitmap.
      * Returns false on any failure — silent no-op by design.
      */

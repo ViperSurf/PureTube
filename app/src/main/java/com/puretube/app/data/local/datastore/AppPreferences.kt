@@ -34,6 +34,9 @@ enum class ControlsVisibility { AUTO_HIDE, ALWAYS_VISIBLE }
 /** How the player shows like/dislike counts (v1.4). */
 enum class LikesDisplay { NUMBERS, PERCENTAGE, BOTH }
 
+/** HaramBlur region scope (v1.5): tight face/head box, or an approximated person region. */
+enum class BlurScope { FACE_ONLY, FACE_AND_BODY }
+
 /** App language; SYSTEM follows the phone. Applies on restart. */
 enum class AppLanguage(val code: String) {
     SYSTEM("SYSTEM"), ENGLISH("en"), ARABIC("ar"), SPANISH("es"),
@@ -59,6 +62,8 @@ data class AppPreferencesState(
     val blurTargetGender: BlurTargetGender = BlurTargetGender.FEMALE_ONLY,
     val protectedMediaType: ProtectedMediaType = ProtectedMediaType.BOTH_IMAGES_AND_VIDEOS,
     val blurVisualStyle: BlurVisualStyle = BlurVisualStyle.FROSTED_GAUSSIAN,
+    /** v1.5: FACE_ONLY blurs the face/head box; FACE_AND_BODY approximates the whole person. */
+    val blurScope: BlurScope = BlurScope.FACE_ONLY,
     val detectionSensitivity: Float = 0.65f,
     val blurIntensityRadius: Float = 28f,
     val zeroFlashSafePreBlur: Boolean = true,
@@ -95,6 +100,9 @@ data class AppPreferencesState(
     val unmuteRaisesVolume: Boolean = true,
     /** v1.4: video + seek + chips stay pinned while the rest scrolls. */
     val keepVideoPinnedWhileScrolling: Boolean = true,
+    /** v1.5: left/right vertical-drag brightness/volume on the video. OFF by default —
+     *  drag down/up on the video is minimize/maximize instead. */
+    val swipeBrightnessVolumeControls: Boolean = false,
     // Section 3: Focus, Shorts & Feed Filters
     val stripShortsEverywhere: Boolean = true,
     val defaultStartTab: DefaultStartTab = DefaultStartTab.SUBSCRIPTIONS,
@@ -151,6 +159,8 @@ class AppPreferences(private val context: Context) {
         val blurTargetGender = stringPreferencesKey("blur_target_gender")
         val protectedMediaType = stringPreferencesKey("protected_media_type")
         val blurVisualStyle = stringPreferencesKey("blur_visual_style")
+        val blurScope = stringPreferencesKey("blur_scope")
+        val swipeBrightnessVolume = booleanPreferencesKey("swipe_brightness_volume")
         val detectionSensitivity = floatPreferencesKey("detection_sensitivity")
         val blurIntensityRadius = floatPreferencesKey("blur_intensity_radius")
         val zeroFlashSafePreBlur = booleanPreferencesKey("zero_flash_safe_pre_blur")
@@ -234,6 +244,7 @@ class AppPreferences(private val context: Context) {
             blurTargetGender = enumOr(Keys.blurTargetGender, BlurTargetGender.entries.toTypedArray(), d.blurTargetGender),
             protectedMediaType = enumOr(Keys.protectedMediaType, ProtectedMediaType.entries.toTypedArray(), d.protectedMediaType),
             blurVisualStyle = enumOr(Keys.blurVisualStyle, BlurVisualStyle.entries.toTypedArray(), d.blurVisualStyle),
+            blurScope = enumOr(Keys.blurScope, BlurScope.entries.toTypedArray(), d.blurScope),
             detectionSensitivity = this[Keys.detectionSensitivity] ?: d.detectionSensitivity,
             blurIntensityRadius = this[Keys.blurIntensityRadius] ?: d.blurIntensityRadius,
             zeroFlashSafePreBlur = this[Keys.zeroFlashSafePreBlur] ?: d.zeroFlashSafePreBlur,
@@ -264,6 +275,7 @@ class AppPreferences(private val context: Context) {
             autoRotatePlayer = this[Keys.autoRotatePlayer] ?: d.autoRotatePlayer,
             unmuteRaisesVolume = this[Keys.unmuteRaisesVolume] ?: d.unmuteRaisesVolume,
             keepVideoPinnedWhileScrolling = this[Keys.keepVideoPinned] ?: d.keepVideoPinnedWhileScrolling,
+            swipeBrightnessVolumeControls = this[Keys.swipeBrightnessVolume] ?: d.swipeBrightnessVolumeControls,
             doubleTapSearchResets = this[Keys.doubleTapSearchResets] ?: d.doubleTapSearchResets,
             likesDisplay = enumOr(Keys.likesDisplay, LikesDisplay.entries.toTypedArray(), d.likesDisplay),
             stripShortsEverywhere = this[Keys.stripShortsEverywhere] ?: d.stripShortsEverywhere,
@@ -309,6 +321,8 @@ class AppPreferences(private val context: Context) {
         this[Keys.blurTargetGender] = next.blurTargetGender.name
         this[Keys.protectedMediaType] = next.protectedMediaType.name
         this[Keys.blurVisualStyle] = next.blurVisualStyle.name
+        this[Keys.blurScope] = next.blurScope.name
+        this[Keys.swipeBrightnessVolume] = next.swipeBrightnessVolumeControls
         this[Keys.detectionSensitivity] = next.detectionSensitivity
         this[Keys.blurIntensityRadius] = next.blurIntensityRadius
         this[Keys.zeroFlashSafePreBlur] = next.zeroFlashSafePreBlur

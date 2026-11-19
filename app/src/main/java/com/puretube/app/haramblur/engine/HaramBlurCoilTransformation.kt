@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import coil3.size.Size
 import coil3.transform.Transformation
+import com.puretube.app.data.local.datastore.BlurScope
 import com.puretube.app.data.local.datastore.BlurTargetGender
 import com.puretube.app.data.local.datastore.BlurVisualStyle
 
@@ -25,7 +26,9 @@ class HaramBlurCoilTransformation(
     /** v1.4: the item's channel — exempt channels are never blurred. */
     private val channelId: String = "",
     private val channelName: String = "",
-    private val exemptChannelKeys: Set<String> = emptySet()
+    private val exemptChannelKeys: Set<String> = emptySet(),
+    /** v1.5: face-only vs face+body region scope. */
+    private val blurScope: BlurScope = BlurScope.FACE_ONLY
 ) : Transformation() {
 
     // v1.3: the key carries a model revision token. Pre-v1.3 builds cached
@@ -35,7 +38,7 @@ class HaramBlurCoilTransformation(
     // effective target (all-faces fallback when no gender model is loaded)
     // is part of the key too.
     override val cacheKey: String =
-        "haramblur_v14model_${com.puretube.app.domain.HaramBlurPolicy.effectiveTarget(targetGender, engine.hasGenderModel)}_${visualStyle}_${sensitivity}_${blurIntensity}_${isManuallyPeeked}_exempt${com.puretube.app.domain.HaramBlurExemptions.normalizeChannelId(channelId)}_${exemptChannelKeys.hashCode()}"
+        "haramblur_v15gender_${com.puretube.app.domain.HaramBlurPolicy.effectiveTarget(targetGender, engine.hasGenderModel)}_${visualStyle}_${sensitivity}_${blurIntensity}_${isManuallyPeeked}_${blurScope}_exempt${com.puretube.app.domain.HaramBlurExemptions.normalizeChannelId(channelId)}_${exemptChannelKeys.hashCode()}"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
         if (isManuallyPeeked) return input
@@ -48,7 +51,9 @@ class HaramBlurCoilTransformation(
             engine.detectRegionsToBlur(
                 sourceBitmap = input,
                 targetGender = targetGender,
-                sensitivity = sensitivity
+                sensitivity = sensitivity,
+                blurScope = blurScope,
+                allowTiledRetry = true
             )
         }.getOrDefault(emptyList())
         if (regions.isEmpty()) return input

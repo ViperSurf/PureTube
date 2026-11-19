@@ -60,6 +60,25 @@ object BlurBoxMath {
     /** Backwards-compatible alias; same face/head-only semantics as [expandFaceBox]. */
     fun expandForHairAndShoulders(faceRect: NormalizedRect): NormalizedRect = expandFaceBox(faceRect)
 
+    /**
+     * v1.5 FACE_AND_BODY scope: expands a face-only box into an APPROXIMATED
+     * person region — total width 1.6x the face box (0.3x of the width added
+     * on each side) and the bottom extended so the region spans 2.5x the
+     * face-box height measured from its top. This is a geometric guess from
+     * the face box (shoulders/torso proportions), not a body detection;
+     * clamped to the frame.
+     */
+    fun expandPersonRegion(faceBox: NormalizedRect): NormalizedRect {
+        val sidePad = faceBox.width * 0.3f
+        val newBottom = faceBox.top + faceBox.height * 2.5f
+        return NormalizedRect(
+            (faceBox.left - sidePad).coerceAtLeast(0f),
+            faceBox.top,
+            (faceBox.right + sidePad).coerceAtMost(1f),
+            newBottom.coerceAtMost(1f)
+        )
+    }
+
     fun computeIoU(a: NormalizedRect, b: NormalizedRect): Float {
         val interLeft = max(a.left, b.left)
         val interTop = max(a.top, b.top)

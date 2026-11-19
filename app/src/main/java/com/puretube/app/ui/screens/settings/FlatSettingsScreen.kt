@@ -180,6 +180,11 @@ fun FlatSettingsScreen() {
         val next = values[(prefs.blurVisualStyle.ordinal + 1) % values.size]
         scope.launch { app.preferences.update { it.copy(blurVisualStyle = next) } }
     }
+    fun cycleBlurScope() {
+        val values = com.puretube.app.data.local.datastore.BlurScope.entries
+        val next = values[(prefs.blurScope.ordinal + 1) % values.size]
+        scope.launch { app.preferences.update { it.copy(blurScope = next) } }
+    }
     fun cycleFeedLayout() {
         val values = FeedLayout.entries
         val next = values[(prefs.feedLayout.ordinal + 1) % values.size]
@@ -251,7 +256,7 @@ fun FlatSettingsScreen() {
             CycleButton(prefs.protectionScope.name) { cycleScope() }
         },
         SettingRowDef("1. HaramBlur Protection", "Who to Blur",
-            "Select whether the on-device vision model blurs detected females only (default), males only, or all people in thumbnails and videos. Note: no gender model is bundled yet, so until one is added ALL detected faces are blurred regardless of this setting (see the HaramBlur status block at the top of Settings).") {
+            "Select whether the on-device vision model blurs detected females only (default), males only, or all people in thumbnails and videos. A small gender model is now bundled (v1.5), so this is a real classification of each detected face — see the HaramBlur status block at the top of Settings for the live mode. If the gender model ever fails to load, ALL detected faces are blurred instead (all-faces fallback).") {
             CycleButton(prefs.blurTargetGender.name) { cycleGender() }
         },
         SettingRowDef("1. HaramBlur Protection", "What to Protect",
@@ -261,6 +266,10 @@ fun FlatSettingsScreen() {
         SettingRowDef("1. HaramBlur Protection", "Blur Visual Style",
             "Choose between a smooth Frosted Gaussian Blur, Pixelated Mosaic blocks, or a solid dark curtain over detected areas.") {
             CycleButton(prefs.blurVisualStyle.name) { cycleStyle() }
+        },
+        SettingRowDef("1. HaramBlur Protection", "Blur Scope",
+            "FACE_ONLY (default) blurs just the face/head box. FACE_AND_BODY widens that box into an approximated person region (about 1.6x wider, extending about 2.5 face-heights down) — it is a geometric estimate from the face box, not a separate body detection, so it can over- or under-cover. Applies to thumbnails, video and the System Shield.") {
+            CycleButton(prefs.blurScope.name) { cycleBlurScope() }
         },
         SettingRowDef("1. HaramBlur Protection", "Detection Sensitivity",
             "Higher (Strict) sensitivity blurs even partially visible or uncertain faces; lower (Relaxed) sensitivity only blurs high-confidence matches.") {
@@ -521,10 +530,20 @@ fun FlatSettingsScreen() {
             CycleButton(prefs.controlsVisibility.name) { cycleControlsVisibility() }
         },
         SettingRowDef("2. Playback, PiP & Audio", "Auto-Rotate Player",
-            "When on, the player screen rotates freely with your phone (including landscape). When off, the player stays locked to portrait. Other screens are never affected.") {
+            "When on, the player screen rotates freely with your phone (including landscape). When off, the player stays locked to portrait. Other screens are never affected. In landscape the player is fullscreen: the bottom navigation hides until you rotate back.") {
             Switch(
                 checked = prefs.autoRotatePlayer,
                 onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(autoRotatePlayer = v) } } }
+            )
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "Swipe Brightness/Volume Controls",
+            if (prefs.swipeBrightnessVolumeControls)
+                "ON: on the full player, drag up/down on the LEFT third of the video for brightness and the RIGHT third for volume; drags in the CENTRE third (or on the pill handle above the title) minimize the player. Drag up on the mini player to expand it again."
+            else
+                "OFF (default): vertical drags on the video do NOT change brightness or volume. Instead, drag DOWN anywhere on the video to minimize it to the mini player, and drag UP on the mini player to expand it back. Turn this on to get left-side brightness / right-side volume swipe controls (minimize drags then start from the centre third or the pill handle).") {
+            Switch(
+                checked = prefs.swipeBrightnessVolumeControls,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(swipeBrightnessVolumeControls = v) } } }
             )
         },
         SettingRowDef("2. Playback, PiP & Audio", "Unmute Raises Volume",
@@ -768,6 +787,14 @@ fun FlatSettingsScreen() {
                 )
                 Text(
                     "Last detection count: ${if (samplerDiag.lastDetectionCount >= 0) samplerDiag.lastDetectionCount.toString() else "—"}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Last detection pass: ${samplerDiag.lastPassType}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Total detections since play start: ${samplerDiag.totalDetections}",
                     color = PureTextSecondary, fontSize = 13.sp
                 )
                 samplerDiag.lastError?.let { err ->
