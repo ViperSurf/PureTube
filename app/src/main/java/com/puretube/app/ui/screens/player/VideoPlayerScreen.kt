@@ -15,10 +15,11 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.ui.input.pointer.changedToUpOrCanceled
-import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.input.pointer.PointerEventType
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -298,6 +299,8 @@ fun VideoPlayerScreen(
     var holdPreviousSpeed by remember { mutableStateOf(1.0f) }
     var tapTimeoutJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
+    val gestureDensity = LocalDensity.current
+
     /** Executes classified gesture actions — the ONLY path from touch to player actions. */
     fun executeGestureEvents(events: List<com.puretube.app.domain.GestureClassifier.Event>) {
         for (event in events) {
@@ -321,7 +324,7 @@ fun VideoPlayerScreen(
                     }
                 }
                 com.puretube.app.domain.GestureClassifier.Action.HOLD_START -> {
-                    val marginPx = with(density) { 24.dp.toPx() }
+                    val marginPx = with(gestureDensity) { 24.dp.toPx() }
                     if (event.x < marginPx || event.x > videoContainerSize.width - marginPx) {
                         continue
                     }
@@ -375,7 +378,9 @@ fun VideoPlayerScreen(
                             swipeIndicator = "Brightness ${(next * 100).toInt()}%"
                         }
                         1 -> {
-                            val am = audioManager
+                            val am = context.getSystemService(
+                                android.content.Context.AUDIO_SERVICE
+                            ) as? AudioManager
                             if (am != null) {
                                 val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                                 val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -402,7 +407,7 @@ fun VideoPlayerScreen(
                 }
                 com.puretube.app.domain.GestureClassifier.Action.DRAG_END -> {
                     if (dragIsMinimize &&
-                        lastDragDy > with(density) { 120.dp.toPx() }
+                        lastDragDy > with(gestureDensity) { 120.dp.toPx() }
                     ) {
                         onMinimize()
                     }
@@ -623,7 +628,7 @@ fun VideoPlayerScreen(
 
     // v2.1: rebuild the audio choice list from the player's live track
     // groups (DASH/HLS renditions), falling back to the extractor list.
-    LaunchedEffect(resolved, playerState.isPlaying, playerState.positionMs) {
+    LaunchedEffect(resolved, playerState.isPlaying, playerState.currentPositionMs) {
         val stream = resolved ?: return@LaunchedEffect
         val activeController = controller
         val rawChoices = if (activeController != null) {
@@ -1169,6 +1174,7 @@ fun VideoPlayerScreen(
                             executeGestureEvents(
                                 classifier.onDown(down.position.x, down.position.y, down.uptimeMillis)
                             )
+                            var lastPosition = down.position
                             var up = false
                             while (!up) {
                                 val pointerEvent = withTimeoutOrNull(40L) { awaitPointerEvent() }
@@ -1181,17 +1187,18 @@ fun VideoPlayerScreen(
                                 val change = pointerEvent.changes
                                     .firstOrNull { it.id == down.id } ?: continue
                                 when {
-                                    change.changedToUpOrCanceled() -> {
+                                    pointerEvent.type == PointerEventType.Cancel -> {
+                                        up = true
+                                        executeGestureEvents(classifier.onCancel())
+                                    }
+                                    !change.pressed -> {
                                         up = true
                                         executeGestureEvents(
-                                            if (change.isCanceled) {
-                                                classifier.onCancel()
-                                            } else {
-                                                classifier.onUp(change.uptimeMillis)
-                                            }
+                                            classifier.onUp(change.uptimeMillis)
                                         )
                                     }
-                                    change.positionChanged() -> {
+                                    change.position != lastPosition -> {
+                                        lastPosition = change.position
                                         executeGestureEvents(
                                             classifier.onMove(
                                                 change.position.x,
@@ -1247,7 +1254,7 @@ fun VideoPlayerScreen(
             // bold). Driven by the regular position poll.
             val activeCue = if (selectedCaption != null) {
                 com.puretube.app.domain.CaptionParser.cueAt(
-                    captionCues, playerState.positionMs
+                    captionCues, playerState.currentPositionMs
                 )
             } else {
                 null
@@ -2301,7 +2308,7 @@ fun VideoPlayerScreen(
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .windowInsetsPadding(
-                                androidx.compose.foundation.layout.WindowInsets.safeDrawing
+                                WindowInsets.safeDrawing
                             )
                             .padding(start = 16.dp, top = 12.dp, end = 16.dp)
                     ) {
@@ -2324,7 +2331,7 @@ fun VideoPlayerScreen(
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .windowInsetsPadding(
-                            androidx.compose.foundation.layout.WindowInsets.safeDrawing
+                            WindowInsets.safeDrawing
                                 .only(
                                     androidx.compose.foundation.layout.WindowInsetsSides.Bottom +
                                         androidx.compose.foundation.layout.WindowInsetsSides.Horizontal

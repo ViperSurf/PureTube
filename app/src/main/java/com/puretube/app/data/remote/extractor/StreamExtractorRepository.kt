@@ -308,13 +308,9 @@ class StreamExtractorRepository(
                 safe { info.relatedStreams }?.filterNotNull().orEmpty()
                     .filterIsInstance<StreamInfoItem>().mapFeedSafe()
             }.getOrDefault(emptyList()),
-            uploadDateEpochMs = runCatching {
-                safe { info.uploadDate }?.let { wrapper ->
-                    runCatching {
-                        wrapper.dateTime.toInstant().toEpochMilli()
-                    }.getOrDefault(0L)
-                } ?: 0L
-            }.getOrDefault(0L),
+            uploadDateEpochMs = parseTextualUploadDate(
+                safe { info.textualUploadDate }
+            ),
             uploadDateText = safe { info.textualUploadDate }?.takeIf { it.isNotBlank() },
             subtitles = runCatching {
                 safe { info.subtitles }?.filterNotNull().orEmpty().mapNotNull { sub ->
@@ -550,6 +546,33 @@ class StreamExtractorRepository(
      * runCatching in mapNotNull — one bad item is skipped, never fatal.
      */
     private fun <T> safe(block: () -> T?): T? = runCatching(block).getOrNull()
+
+    /**
+     * NewPipe's textual upload date ("Nov 12, 2026" / "12 Nov 2026") to
+     * epoch ms (v2.1). The DateWrapper API differs across extractor
+     * versions, so the info line relies on the text + the relative text
+     * instead. Returns 0 when the text is relative ("3 days ago") or
+     * unparseable — the UI then shows the source text as-is.
+     */
+    private fun parseTextualUploadDate(value: String?): Long {
+        if (value.isNullOrBlank()) return 0L
+        val patterns = listOf("MMM d, yyyy", "d MMM yyyy", "yyyy-MM-dd")
+        for (pattern in patterns) {
+            val parsed = runCatching {
+                java.time.LocalDate.parse(
+                    value.trim(),
+                    java.time.format.DateTimeFormatter.ofPattern(
+                        pattern, java.util.Locale.ENGLISH
+                    )
+                )
+            }.getOrNull()
+            if (parsed != null) {
+                return parsed.atStartOfDay()
+                    .toInstant(java.time.ZoneOffset.UTC).toEpochMilli()
+            }
+        }
+        return 0L
+    }
 
     /** Piped uploadDate is an ISO local date ("2026-11-12"); parse to epoch ms (v2.1). */
     private fun parseIsoDateToEpochMs(value: String?): Long {
