@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.5.0 — 2026-11-18
+
+PiP fixes, gesture rework, floating-window redesign, HaramBlur round 3.
+
+### PiP
+- **Mute/unmute icons are now unmistakable:** two custom drawables (speaker + sound waves vs speaker + X + slash) replace the near-identical system pair, and the PiP params are **refreshed live** (`setPictureInPictureParams`) whenever play or mute state changes while in PiP, so the icon flips in place.
+- **PiP shows the video, not the tab:** while in PiP the activity renders only the video surface (the same session player's TextureView), regardless of the nav route underneath — entering PiP from the minimized/dock state no longer shows the Home tab. Exiting PiP restores the previous route/UI exactly. The PiP `sourceRectHint` is the video view's real bounds, and auto-enter only triggers while something is actually playing.
+- **Landscape player is fullscreen:** rotating the full player sideways hides the bottom nav, dock and floating window; the video fills the screen and tap-to-show controls still work.
+
+### Gestures — brightness/volume are opt-in now
+- New setting **Swipe Brightness/Volume Controls** (default **OFF**). OFF: the v1.4 left/right brightness/volume drags are disabled entirely.
+- **Primary gesture:** drag DOWN on the video — it follows your finger — and release past ~120 dp to minimize (otherwise it springs back). Drag UP on the floating window or the dock to expand; the handle pill above the title still minimizes too.
+- ON restores the v1.4 map (left third brightness, right third volume, centre third/handle minimize). The Settings tooltip describes whichever map is currently active.
+
+### Floating window — just the video
+- All overlays removed: no pause, no seek bar, no S/M/L sizes, no Expand, no X. It renders the moving video only.
+- Drag to move; **pinch or drag the corner grip to resize** dynamically (16:9, clamped); tap or drag up to expand.
+- The dock gains a **"Mini window" state button** (highlighted while the window is visible, plain while hidden) — it is the show/hide control; hiding the window keeps playback going in the dock.
+
+### HaramBlur round 3
+- **"Preferably only female" is real now:** a small gender classifier is bundled — `model_gender_q.tflite` from the MIT-licensed [Age-Gender_Estimation_TF-Android](https://github.com/shubham0204/Age-Gender_Estimation_TF-Android) project (trained on UTKFace), verified host-side with LiteRT before bundling (valid TFLite; input `[1,128,128,3]` float [0,1]; output `[1,2]` probabilities ordered [male, female]; the bundled male test portrait classifies Male at ~0.88–0.90 from a tight face crop). Who-to-Blur now classifies each detected face for real; the all-faces fallback remains if the model ever fails to load, and Settings states the live mode either way. The model expects tight face crops, so classification uses the detected box with only a small margin.
+- **Blur Scope setting:** `FACE_ONLY` (default, the v1.4 tight face/head box) or `FACE_AND_BODY` — an approximated person region (~1.6× wider, ~2.5 face-heights down from the face top; a geometric estimate, not a body detection). Applies to thumbnails, video and the shield.
+- **Small/distant faces:** the sampler buffer doubles to **640×360**, and a **tiled second pass** (2×2 overlapping quadrants, boxes mapped back and NMS-merged) runs when the full-frame pass finds nothing — always for thumbnails (plus a 2× upscale retry under 256 px wide), and for video at a reduced cadence (after consecutive empty full passes) with the 450 ms hysteresis bridging gaps. Sampler diagnostics gain **last pass type** (full/tiled/upscale) and **total detections since play start**.
+
 ## v1.4.0 — 2026-11-18
 
 In-video HaramBlur fix, player UX, rich descriptions, comment replies.

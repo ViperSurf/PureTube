@@ -159,7 +159,11 @@ class SystemBlurOverlayService : Service() {
                             val regions = haramBlurEngine.detectRegionsToBlur(
                                 sourceBitmap = reusableBitmap,
                                 targetGender = BlurTargetGender.FEMALE_ONLY,
-                                sensitivity = 0.65f
+                                sensitivity = 0.65f,
+                                // v1.5: the shield honours the same Blur Scope setting.
+                                blurScope = (application as? com.puretube.app.PureTubeApp)
+                                    ?.currentPrefs?.blurScope
+                                    ?: com.puretube.app.data.local.datastore.BlurScope.FACE_ONLY
                             )
                             overlayView?.updateRegions(regions)
                         }
