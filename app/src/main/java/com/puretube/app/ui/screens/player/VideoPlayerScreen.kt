@@ -172,7 +172,9 @@ fun VideoPlayerScreen(
     onVideoClick: (String) -> Unit = {},
     onChannelClick: (String) -> Unit = {},
     onMinimize: () -> Unit = onBack,
-    onQueueClick: () -> Unit = {}
+    onQueueClick: () -> Unit = {},
+    /** v1.5: landscape on the player route — video fills the screen, chrome hidden. */
+    fullscreenLandscape: Boolean = false
 ) {
     val context = LocalContext.current
     val app = context.applicationContext as PureTubeApp
@@ -621,10 +623,14 @@ fun VideoPlayerScreen(
 
     val videoBox: @Composable () -> Unit = {
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
-                .background(Color.Black)
+            modifier = if (fullscreenLandscape) {
+                Modifier.fillMaxSize().background(Color.Black)
+            } else {
+                Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .background(Color.Black)
+            }
         ) {
             if (controller != null && playerState.audioOnly) {
                 // Audio Only: the video picture is REMOVED — placeholder with
@@ -670,6 +676,13 @@ fun VideoPlayerScreen(
                     update = { view ->
                         if (textureViewRef !== view) textureViewRef = view
                         runCatching { controller?.setVideoTextureView(view) }
+                        // v1.5: keep the PiP sourceRectHint pointed at the video.
+                        runCatching {
+                            val rect = android.graphics.Rect()
+                            if (view.getGlobalVisibleRect(rect)) {
+                                app.pipSourceRectHint = rect
+                            }
+                        }
                     },
                     onRelease = { view ->
                         runCatching { controller?.clearVideoTextureView(view) }
@@ -1410,10 +1423,23 @@ fun VideoPlayerScreen(
     }
 
     // ------------------------------------------------------------------
-    // Layout branch: sticky (pinned) header vs single-scroll page.
-    // The same three pieces are used in both — no duplicated content.
+    // Layout branch: landscape fullscreen vs sticky (pinned) header vs
+    // single-scroll page. The same pieces are used — no duplicated content.
     // ------------------------------------------------------------------
-    if (prefs.keepVideoPinnedWhileScrolling) {
+    if (fullscreenLandscape) {
+        // v1.5: video fills the screen; seek + chips overlay at the
+        // bottom when visible (tap toggles them, same as portrait).
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+        ) {
+            videoBox()
+            Box(modifier = Modifier.align(Alignment.BottomCenter)) {
+                controlsArea()
+            }
+        }
+    } else if (prefs.keepVideoPinnedWhileScrolling) {
         Column(
             modifier = Modifier
                 .fillMaxSize()

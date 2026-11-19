@@ -70,6 +70,15 @@ class PureTubeApp : Application() {
     var currentPrefs: AppPreferencesState = AppPreferencesState()
         private set
 
+    /**
+     * Window bounds of the currently visible video view (player
+     * TextureView or floating window), updated on layout by whichever
+     * surface is on screen (v1.5). MainActivity passes it as the PiP
+     * sourceRectHint so PiP animates out of the actual video.
+     */
+    @Volatile
+    var pipSourceRectHint: android.graphics.Rect? = null
+
     override fun onCreate() {
         super.onCreate()
         // Record uncaught exceptions for Settings > Diagnostics, then delegate.

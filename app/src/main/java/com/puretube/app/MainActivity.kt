@@ -6,12 +6,14 @@ import android.app.PictureInPictureParams
 import android.app.RemoteAction
 import android.content.ComponentName
 import android.content.Intent
+import android.graphics.Rect
 import android.graphics.drawable.Icon
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Rational
 import android.view.KeyEvent
+import android.view.TextureView
 import android.content.Context
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
@@ -44,8 +46,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
@@ -79,12 +83,27 @@ import com.puretube.app.ui.theme.PureOledTheme
 /**
  * Native PiP params with Play/Pause, Mute, and +10s RemoteActions.
  * Auto-enter is enabled on Android 12+ when requested and playback is running.
+ *
+ * v1.5: the Mute action uses two CUSTOM drawables with unmistakably
+ * different silhouettes (speaker + waves vs speaker + X + slash) — the
+ * old ic_lock_silent_mode pair looked identical at PiP size. The params
+ * are also re-applied live via setPictureInPictureParams whenever play
+ * or mute state changes while already in PiP, so the icon flips in
+ * place. [sourceRect] (the on-screen video view's window bounds) is set
+ * as the sourceRectHint so the PiP window animates out of the video.
  */
 fun FragmentActivity.buildAndEnterPipParams(
     isPlaying: Boolean,
     isMuted: Boolean,
-    autoEnterEnabled: Boolean
+    autoEnterEnabled: Boolean,
+    sourceRect: Rect? = null
 ): PictureInPictureParams {
+    val muteIconRes = when (
+        com.puretube.app.domain.PipActionIcons.muteIconFor(isMuted)
+    ) {
+        com.puretube.app.domain.PipActionIcons.MuteIcon.MUTED -> R.drawable.ic_pip_volume_off
+        com.puretube.app.domain.PipActionIcons.MuteIcon.UNMUTED -> R.drawable.ic_pip_volume_on
+    }
     val actions = listOf(
         RemoteAction(
             Icon.createWithResource(
@@ -102,10 +121,7 @@ fun FragmentActivity.buildAndEnterPipParams(
             )
         ),
         RemoteAction(
-            Icon.createWithResource(
-                this,
-                if (isMuted) android.R.drawable.ic_lock_silent_mode else android.R.drawable.ic_lock_silent_mode_off
-            ),
+            Icon.createWithResource(this, muteIconRes),
             if (isMuted) "Unmute" else "Mute",
             "Toggle Mute",
             PendingIntent.getBroadcast(
@@ -132,11 +148,45 @@ fun FragmentActivity.buildAndEnterPipParams(
     val builder = PictureInPictureParams.Builder()
         .setAspectRatio(Rational(16, 9))
         .setActions(actions)
+    if (sourceRect != null && !sourceRect.isEmpty) {
+        runCatching { builder.setSourceRectHint(sourceRect) }
+    }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         builder.setAutoEnterEnabled(autoEnterEnabled && isPlaying)
         builder.setSeamlessResizeEnabled(true)
     }
     return builder.build()
+}
+
+/**
+ * The PiP-only video surface (v1.5): while the activity is in
+ * picture-in-picture it renders ONLY this — a TextureView bound to the
+ * same session player — filling the PiP window, whatever nav route is
+ * underneath. That fixes PiP entered from the minimized state showing
+ * the Home/Search tab instead of the video. The surface is re-bound,
+ * not a second player: the player's own TextureView clears on release
+ * and this one takes over (and vice versa when PiP exits).
+ */
+@Composable
+private fun PipVideoSurface(controller: MediaController?) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+        if (controller != null) {
+            AndroidView(
+                factory = { ctx ->
+                    TextureView(ctx).also { tv ->
+                        runCatching { controller.setVideoTextureView(tv) }
+                    }
+                },
+                update = { view ->
+                    runCatching { controller.setVideoTextureView(view) }
+                },
+                onRelease = { view ->
+                    runCatching { controller.clearVideoTextureView(view) }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
 }
 
 class MainActivity : FragmentActivity() {
@@ -252,8 +302,9 @@ class MainActivity : FragmentActivity() {
         val controller = mediaController ?: return
         val params = buildAndEnterPipParams(
             isPlaying = controller.isPlaying,
-            isMuted = controller.volume == 0f,
-            autoEnterEnabled = app.currentPrefs.autoEnterPipOnHome
+            isMuted = app.playerController.state.value.isMuted,
+            autoEnterEnabled = app.currentPrefs.autoEnterPipOnHome,
+            sourceRect = app.pipSourceRectHint
         )
         runCatching { enterPictureInPictureMode(params) }
     }
@@ -262,11 +313,13 @@ class MainActivity : FragmentActivity() {
         super.onUserLeaveHint()
         val app = application as PureTubeApp
         val controller = mediaController ?: return
+        // Auto-enter only when something is actually playing.
         if (app.currentPrefs.autoEnterPipOnHome && controller.isPlaying) {
             val params = buildAndEnterPipParams(
                 isPlaying = true,
-                isMuted = controller.volume == 0f,
-                autoEnterEnabled = true
+                isMuted = app.playerController.state.value.isMuted,
+                autoEnterEnabled = true,
+                sourceRect = app.pipSourceRectHint
             )
             runCatching { enterPictureInPictureMode(params) }
         }
@@ -371,9 +424,45 @@ private fun PureTubeNav(
         onPendingVideoConsumed()
     }
 
+    // v1.5: live PiP action refresh — while in PiP, any play/pause or
+    // mute change re-applies the params so the remote-action icons
+    // (especially the custom mute/unmute pair) flip in place instead of
+    // staying frozen at whatever they were on entry.
+    LaunchedEffect(inPictureInPicture, playerState.isPlaying, playerState.isMuted) {
+        if (inPictureInPicture) {
+            val act = activity ?: return@LaunchedEffect
+            runCatching {
+                act.setPictureInPictureParams(
+                    act.buildAndEnterPipParams(
+                        isPlaying = playerState.isPlaying,
+                        isMuted = playerState.isMuted,
+                        autoEnterEnabled = prefs.autoEnterPipOnHome,
+                        sourceRect = app.pipSourceRectHint
+                    )
+                )
+            }
+        }
+    }
+
+    // v1.5 PiP-only layout: in PiP the activity renders ONLY the video
+    // surface, whatever the nav route underneath (fixes PiP entered from
+    // the minimized/dock state showing the Home tab). The nav state is
+    // untouched, so exiting PiP restores the previous route/UI exactly.
+    if (inPictureInPicture) {
+        PipVideoSurface(controller = controller)
+        return
+    }
+
+    // v1.5: landscape on the player route = fullscreen player (the
+    // bottom nav / dock / floating window hide, video fills the screen).
+    val configuration = LocalConfiguration.current
+    val isLandscape =
+        configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    val playerFullscreen = isLandscape && currentRoute?.startsWith("player") == true
+
     Scaffold(
         containerColor = Color.Black,
-        bottomBar = { if (!inPictureInPicture) {
+        bottomBar = { if (!playerFullscreen) {
             Column(modifier = Modifier.background(Color.Black)) {
                 if (currentRoute?.startsWith("player") != true && playerState.title.isNotBlank()) {
                     Box(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
@@ -557,6 +646,7 @@ private fun PureTubeNav(
                     VideoPlayerScreen(
                         videoId = videoId,
                         controller = controller,
+                        fullscreenLandscape = playerFullscreen,
                         onBack = { navController.popBackStack() },
                         onMinimize = {
                             floatingOpen = true
@@ -582,7 +672,7 @@ private fun PureTubeNav(
                     Text(text, color = Color.White, fontSize = 13.sp)
                 }
             }
-            if (!inPictureInPicture && floatingOpen && currentRoute?.startsWith("player") != true) {
+            if (!inPictureInPicture && !playerFullscreen && floatingOpen && currentRoute?.startsWith("player") != true) {
                 FloatingMiniWindow(
                     controller = controller,
                     state = playerState,
