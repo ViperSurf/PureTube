@@ -241,7 +241,7 @@ fun FlatSettingsScreen() {
             CycleButton(prefs.protectionScope.name) { cycleScope() }
         },
         SettingRowDef("1. HaramBlur Protection", "Who to Blur",
-            "Select whether the on-device vision model blurs detected females only (default), males only, or all people in thumbnails and videos.") {
+            "Select whether the on-device vision model blurs detected females only (default), males only, or all people in thumbnails and videos. Note: no gender model is bundled yet, so until one is added ALL detected faces are blurred regardless of this setting (see the HaramBlur status block at the top of Settings).") {
             CycleButton(prefs.blurTargetGender.name) { cycleGender() }
         },
         SettingRowDef("1. HaramBlur Protection", "What to Protect",
@@ -296,6 +296,15 @@ fun FlatSettingsScreen() {
                 onCheckedChange = { v ->
                     scope.launch { app.preferences.update { it.copy(audioOnlyMode = v) } }
                     app.playerController.setAudioOnly(v)
+                }
+            )
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "Launch Videos in Audio-Only",
+            "New videos open audio-only: you see the thumbnail and title with an Audio Only label instead of the video picture, which saves data. Tap the Video + Audio chip in the player any time to bring the picture back in place.") {
+            Switch(
+                checked = prefs.launchInAudioOnly,
+                onCheckedChange = { v ->
+                    scope.launch { app.preferences.update { it.copy(launchInAudioOnly = v) } }
                 }
             )
         },
@@ -365,6 +374,24 @@ fun FlatSettingsScreen() {
                             it.copy(collapseCommentsByDefault = v, collapseRelatedByDefault = v)
                         }
                     }
+                }
+            )
+        },
+        SettingRowDef("3. Focus & Feed Filters", "Comments",
+            "Shows the comments section under the player. When this is off, comments are never fetched or shown at all.") {
+            Switch(
+                checked = prefs.enableComments,
+                onCheckedChange = { v ->
+                    scope.launch { app.preferences.update { it.copy(enableComments = v) } }
+                }
+            )
+        },
+        SettingRowDef("3. Focus & Feed Filters", "Description",
+            "Shows the video description section under the player (collapsed by default). When this is off, the section is never shown.") {
+            Switch(
+                checked = prefs.enableDescription,
+                onCheckedChange = { v ->
+                    scope.launch { app.preferences.update { it.copy(enableDescription = v) } }
                 }
             )
         },
@@ -654,6 +681,45 @@ fun FlatSettingsScreen() {
                     lineHeight = 17.sp,
                     modifier = Modifier.padding(top = 8.dp)
                 )
+            }
+        }
+        item(key = "haramblur-status") {
+            val hbStatus by app.haramBlurEngine.statusFlow.collectAsState()
+            var hbTestResult by remember { mutableStateOf("") }
+            androidx.compose.runtime.LaunchedEffect(Unit) {
+                runCatching { app.haramBlurEngine.ensureInitialized() }
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(1.dp, com.puretube.app.ui.theme.PureBorder, RoundedCornerShape(10.dp))
+                    .padding(12.dp)
+            ) {
+                Text("HaramBlur status", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "Face model: ${if (hbStatus.faceModelLoaded) "Loaded" else "Not loaded"}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Mode: ${hbStatus.mode}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                hbStatus.lastError?.let { err ->
+                    Text("Last load error: $err", color = Color(0xFFFF8080), fontSize = 12.sp)
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        scope.launch {
+                            hbTestResult = "Testing…"
+                            hbTestResult = app.haramBlurEngine.runTestDetection()
+                        }
+                    }) { Text("Test detection", fontSize = 12.sp) }
+                }
+                if (hbTestResult.isNotBlank()) {
+                    Text(hbTestResult, color = PureTextSecondary, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+                }
             }
         }
         sections.forEach { (section, sectionRows) ->

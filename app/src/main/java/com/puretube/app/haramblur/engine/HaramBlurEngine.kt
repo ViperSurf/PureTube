@@ -2,8 +2,13 @@ package com.puretube.app.haramblur.engine
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import com.puretube.app.data.local.datastore.BlurTargetGender
+import com.puretube.app.domain.BlazeFaceAnchors
+import com.puretube.app.domain.HaramBlurPolicy
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -14,16 +19,30 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 
+/** Observable HaramBlur engine state for the player pill + Settings block. */
+data class HaramBlurStatus(
+    val faceModelLoaded: Boolean = false,
+    val genderModelLoaded: Boolean = false,
+    val mode: String = "Face model not loaded",
+    val lastError: String? = null
+)
+
 /**
  * On-device vision coordinator. All inference runs 100% locally in memory with
  * TensorFlow Lite; zero frames or bitmaps are ever written to storage or sent
  * over the network.
  *
- * Model files are expected in assets/models/:
- *  - blaze_face_short_range.tflite
- *  - gender_attr_classifier_int8.tflite
- * When the model assets are absent the engine degrades gracefully and returns
- * no regions instead of crashing.
+ * Bundled model (v1.3): the official MediaPipe BlazeFace short-range
+ * float16 face detector in assets/models/blaze_face_short_range.tflite
+ * (input [1,128,128,3] float normalized to [-1,1]; outputs regressors
+ * [1,896,16] + classifiers [1,896,1]; decode via [BlazeFaceAnchors]).
+ *
+ * There is NO gender model bundled. Until a gender_attr_classifier_int8
+ * .tflite is dropped into assets/models/, [HaramBlurPolicy] applies the
+ * all-faces fallback: every detected face is blurred regardless of the
+ * Who-to-Blur setting, and the UI says so.
+ *
+ * The engine never throws: failures land in [statusFlow] as state.
  */
 class HaramBlurEngine(private val context: Context) {
 
@@ -33,34 +52,64 @@ class HaramBlurEngine(private val context: Context) {
     private var genderAttributeInterpreter: Interpreter? = null
     private var initAttempted = false
 
+    private val _status = MutableStateFlow(HaramBlurStatus())
+    val statusFlow: StateFlow<HaramBlurStatus> = _status
+
+    /** True once the gender interpreter actually loaded (not just attempted). */
+    val hasGenderModel: Boolean get() = genderAttributeInterpreter != null
+
+    val isModelAvailable: Boolean get() = faceDetectorInterpreter != null
+
     private val cropBuffer: ByteBuffer =
         ByteBuffer.allocateDirect(1 * 96 * 96 * 3 * 4).apply { order(ByteOrder.nativeOrder()) }
 
-    /** Returns true when both models loaded. Never throws. */
+    private fun publishStatus(error: String? = _status.value.lastError) {
+        val faceLoaded = faceDetectorInterpreter != null
+        _status.value = HaramBlurStatus(
+            faceModelLoaded = faceLoaded,
+            genderModelLoaded = hasGenderModel,
+            mode = HaramBlurPolicy.modeLabel(
+                requested = BlurTargetGender.FEMALE_ONLY,
+                faceModelLoaded = faceLoaded,
+                hasGenderModel = hasGenderModel
+            ),
+            lastError = error
+        )
+    }
+
+    /** Loads the face model (and gender model if present). Never throws. */
     suspend fun ensureInitialized(): Boolean = withContext(Dispatchers.Default) {
         if (faceDetectorInterpreter != null) return@withContext true
         interpreterMutex.withLock {
             if (faceDetectorInterpreter != null) return@withLock true
             if (initAttempted) return@withLock faceDetectorInterpreter != null
             initAttempted = true
-            runCatching {
-                val options = Interpreter.Options().apply {
-                    setNumThreads(2)
-                    runCatching {
-                        gpuDelegate = GpuDelegate()
-                        addDelegate(gpuDelegate)
-                    }
-                }
-                faceDetectorInterpreter =
-                    Interpreter(loadModelMapped("models/blaze_face_short_range.tflite"), options)
+            val result = runCatching {
+                faceDetectorInterpreter = loadInterpreter("models/blaze_face_short_range.tflite")
                 genderAttributeInterpreter = runCatching {
-                    Interpreter(loadModelMapped("models/gender_attr_classifier_int8.tflite"), options)
+                    loadInterpreter("models/gender_attr_classifier_int8.tflite")
                 }.getOrNull()
-            }.isSuccess && faceDetectorInterpreter != null
+            }
+            publishStatus(error = result.exceptionOrNull()?.let {
+                "${it::class.simpleName}: ${it.message ?: "model load failed"}"
+            })
+            result.isSuccess && faceDetectorInterpreter != null
         }
     }
 
-    val isModelAvailable: Boolean get() = faceDetectorInterpreter != null
+    /** GPU delegate first, CPU fallback — a broken GPU path must not kill detection. */
+    private fun loadInterpreter(assetPath: String): Interpreter {
+        val mapped = loadModelMapped(assetPath)
+        val gpuOptions = Interpreter.Options().apply {
+            setNumThreads(2)
+            runCatching {
+                gpuDelegate = GpuDelegate()
+                addDelegate(gpuDelegate)
+            }
+        }
+        return runCatching { Interpreter(mapped, gpuOptions) }
+            .getOrElse { Interpreter(mapped, Interpreter.Options().apply { setNumThreads(2) }) }
+    }
 
     suspend fun detectRegionsToBlur(
         sourceBitmap: Bitmap,
@@ -70,16 +119,21 @@ class HaramBlurEngine(private val context: Context) {
         if (!ensureInitialized()) return@withContext emptyList()
         val threshold = (1.0f - sensitivity).coerceIn(0.15f, 0.75f)
         val rawFaces = interpreterMutex.withLock {
-            runCatching { runFaceAndUpperBodyDetection(sourceBitmap, threshold) }
+            runCatching { runFaceDetection(sourceBitmap, threshold) }
                 .getOrDefault(emptyList())
         }
         if (rawFaces.isEmpty()) return@withContext emptyList()
+
+        // v1.3 rule: no gender model on device -> blur ALL detected faces,
+        // whatever Who-to-Blur says. With a gender model, the requested
+        // target applies as before.
+        val effectiveTarget = HaramBlurPolicy.effectiveTarget(targetGender, hasGenderModel)
 
         val now = System.currentTimeMillis()
         val matchedRegions = mutableListOf<DetectedBlurRegion>()
 
         for ((index, candidateRect) in rawFaces.withIndex()) {
-            if (targetGender == BlurTargetGender.BOTH_ALL_PEOPLE) {
+            if (effectiveTarget == BlurTargetGender.BOTH_ALL_PEOPLE) {
                 matchedRegions.add(
                     DetectedBlurRegion(
                         id = index,
@@ -95,7 +149,7 @@ class HaramBlurEngine(private val context: Context) {
                 runCatching { classifyCropGender(sourceBitmap, candidateRect, threshold) }
                     .getOrDefault(ClassifiedSubject.UNKNOWN_PERSON)
             }
-            if (shouldBlur(targetGender, subject, sensitivity)) {
+            if (shouldBlur(effectiveTarget, subject, sensitivity)) {
                 matchedRegions.add(
                     DetectedBlurRegion(
                         id = index,
@@ -110,10 +164,36 @@ class HaramBlurEngine(private val context: Context) {
         matchedRegions
     }
 
+    /**
+     * "Test detection" (Settings): runs the engine on the bundled
+     * public-domain test portrait and reports the region count or the
+     * error. Never throws.
+     */
+    suspend fun runTestDetection(): String = withContext(Dispatchers.Default) {
+        runCatching {
+            if (!ensureInitialized()) {
+                return@withContext "Face model failed to load: " +
+                    (_status.value.lastError ?: "unknown error")
+            }
+            val bitmap = context.assets.open(TEST_IMAGE_ASSET).use { stream ->
+                BitmapFactory.decodeStream(stream)
+            } ?: return@withContext "Test image could not be decoded"
+            val regions = detectRegionsToBlur(
+                sourceBitmap = bitmap,
+                targetGender = BlurTargetGender.BOTH_ALL_PEOPLE,
+                sensitivity = 0.65f
+            )
+            "${regions.size} face region(s) detected"
+        }.getOrElse { e -> "Test detection failed: ${e::class.simpleName}: ${e.message ?: ""}" }
+    }
+
     companion object {
+        const val TEST_IMAGE_ASSET = "test/face_test.jpg"
+
         /**
          * Gender-target filter. At strict sensitivity (>= 0.75) an UNKNOWN subject
          * is blurred under FEMALE_ONLY, so an uncertain face never slips through.
+         * (Only reached when a gender model is present; see HaramBlurPolicy.)
          */
         fun shouldBlur(
             targetGender: BlurTargetGender,
@@ -135,7 +215,7 @@ class HaramBlurEngine(private val context: Context) {
         }
     }
 
-    private fun runFaceAndUpperBodyDetection(bitmap: Bitmap, minScore: Float): List<NormalizedRect> {
+    private fun runFaceDetection(bitmap: Bitmap, minScore: Float): List<NormalizedRect> {
         val interpreter = faceDetectorInterpreter ?: return emptyList()
         val scaled = Bitmap.createScaledBitmap(bitmap, 128, 128, false)
         val input = ByteBuffer.allocateDirect(1 * 128 * 128 * 3 * 4).order(ByteOrder.nativeOrder())
@@ -153,27 +233,13 @@ class HaramBlurEngine(private val context: Context) {
             arrayOf(input),
             mapOf(0 to regressors, 1 to classifiers)
         )
-        val detected = mutableListOf<NormalizedRect>()
+        val flatRegressors = FloatArray(896 * 16)
+        val flatLogits = FloatArray(896)
         for (i in 0 until 896) {
-            val score = 1f / (1f + kotlin.math.exp(-classifiers[0][i][0]))
-            if (score >= minScore) {
-                val dy = regressors[0][i][0] / 128f
-                val dx = regressors[0][i][1] / 128f
-                val h = (regressors[0][i][2] / 128f).coerceIn(0.05f, 1f)
-                val w = (regressors[0][i][3] / 128f).coerceIn(0.05f, 1f)
-                val cx = ((i % 16) / 16f + dx).coerceIn(0f, 1f)
-                val cy = ((i / 16) / 56f + dy).coerceIn(0f, 1f)
-                detected.add(
-                    NormalizedRect(
-                        (cx - w / 2f).coerceIn(0f, 1f),
-                        (cy - h / 2f).coerceIn(0f, 1f),
-                        (cx + w / 2f).coerceIn(0f, 1f),
-                        (cy + h / 2f).coerceIn(0f, 1f)
-                    )
-                )
-            }
+            System.arraycopy(regressors[0][i], 0, flatRegressors, i * 16, 16)
+            flatLogits[i] = classifiers[0][i][0]
         }
-        return BlurBoxMath.nonMaxSuppression(detected, iouThreshold = 0.35f)
+        return BlazeFaceAnchors.decode(flatRegressors, flatLogits, minScore)
     }
 
     private fun classifyCropGender(

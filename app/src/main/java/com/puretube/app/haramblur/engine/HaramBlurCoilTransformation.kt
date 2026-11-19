@@ -24,8 +24,14 @@ class HaramBlurCoilTransformation(
     private val isManuallyPeeked: Boolean
 ) : Transformation() {
 
+    // v1.3: the key carries a model revision token. Pre-v1.3 builds cached
+    // UNBLURRED thumbnails under the old key (the engine had no model and
+    // returned zero regions); the new token invalidates those entries so a
+    // face thumbnail is never served unblurred from the old cache. The
+    // effective target (all-faces fallback when no gender model is loaded)
+    // is part of the key too.
     override val cacheKey: String =
-        "haramblur_${targetGender}_${visualStyle}_${sensitivity}_${blurIntensity}_$isManuallyPeeked"
+        "haramblur_v13model_${com.puretube.app.domain.HaramBlurPolicy.effectiveTarget(targetGender, engine.hasGenderModel)}_${visualStyle}_${sensitivity}_${blurIntensity}_$isManuallyPeeked"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
         if (isManuallyPeeked) return input

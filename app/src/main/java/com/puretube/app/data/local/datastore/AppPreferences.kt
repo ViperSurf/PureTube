@@ -72,6 +72,8 @@ data class AppPreferencesState(
     val monoAudioMergeEnabled: Boolean = false,
     val keepScreenDimmedAwakeLock: Boolean = false,
     val audioOnlyMode: Boolean = false,
+    /** v1.3: videos open in audio-only (placeholder + title) until the user taps Video + Audio. */
+    val launchInAudioOnly: Boolean = false,
     val autoplayEnabled: Boolean = true,
     val resumePlaybackEnabled: Boolean = true,
     val alwaysStartFromBeginning: Boolean = false,
@@ -83,6 +85,10 @@ data class AppPreferencesState(
     val stripShortsEverywhere: Boolean = true,
     val defaultStartTab: DefaultStartTab = DefaultStartTab.SUBSCRIPTIONS,
     val collapseCommentsByDefault: Boolean = true,
+    /** v1.3: when off, the comments section is never fetched or shown. */
+    val enableComments: Boolean = true,
+    /** v1.3: when off, the description section is never shown. */
+    val enableDescription: Boolean = true,
     val collapseRelatedByDefault: Boolean = true,
     val showUnwatchedOnlyInSubs: Boolean = false,
     val nightOledDimmerAlpha: Float = 0.0f,
@@ -145,6 +151,7 @@ class AppPreferences(private val context: Context) {
         val monoAudioMergeEnabled = booleanPreferencesKey("mono_audio_merge_enabled")
         val keepScreenDimmedAwakeLock = booleanPreferencesKey("keep_screen_dimmed_awake_lock")
         val audioOnlyMode = booleanPreferencesKey("audio_only_mode")
+        val launchInAudioOnly = booleanPreferencesKey("launch_in_audio_only")
         val autoplayEnabled = booleanPreferencesKey("autoplay_enabled")
         val resumePlaybackEnabled = booleanPreferencesKey("resume_playback_enabled")
         val alwaysStartFromBeginning = booleanPreferencesKey("always_start_from_beginning")
@@ -155,6 +162,8 @@ class AppPreferences(private val context: Context) {
         val stripShortsEverywhere = booleanPreferencesKey("strip_shorts_everywhere")
         val defaultStartTab = stringPreferencesKey("default_start_tab")
         val collapseCommentsByDefault = booleanPreferencesKey("collapse_comments_by_default")
+        val enableComments = booleanPreferencesKey("enable_comments")
+        val enableDescription = booleanPreferencesKey("enable_description")
         val collapseRelatedByDefault = booleanPreferencesKey("collapse_related_by_default")
         val showUnwatchedOnlyInSubs = booleanPreferencesKey("show_unwatched_only_in_subs")
         val nightOledDimmerAlpha = floatPreferencesKey("night_oled_dimmer_alpha")
@@ -219,6 +228,7 @@ class AppPreferences(private val context: Context) {
             monoAudioMergeEnabled = this[Keys.monoAudioMergeEnabled] ?: d.monoAudioMergeEnabled,
             keepScreenDimmedAwakeLock = this[Keys.keepScreenDimmedAwakeLock] ?: d.keepScreenDimmedAwakeLock,
             audioOnlyMode = this[Keys.audioOnlyMode] ?: d.audioOnlyMode,
+            launchInAudioOnly = this[Keys.launchInAudioOnly] ?: d.launchInAudioOnly,
             autoplayEnabled = this[Keys.autoplayEnabled] ?: d.autoplayEnabled,
             resumePlaybackEnabled = this[Keys.resumePlaybackEnabled] ?: d.resumePlaybackEnabled,
             alwaysStartFromBeginning = this[Keys.alwaysStartFromBeginning] ?: d.alwaysStartFromBeginning,
@@ -229,6 +239,8 @@ class AppPreferences(private val context: Context) {
             stripShortsEverywhere = this[Keys.stripShortsEverywhere] ?: d.stripShortsEverywhere,
             defaultStartTab = enumOr(Keys.defaultStartTab, DefaultStartTab.entries.toTypedArray(), d.defaultStartTab),
             collapseCommentsByDefault = this[Keys.collapseCommentsByDefault] ?: d.collapseCommentsByDefault,
+            enableComments = this[Keys.enableComments] ?: d.enableComments,
+            enableDescription = this[Keys.enableDescription] ?: d.enableDescription,
             collapseRelatedByDefault = this[Keys.collapseRelatedByDefault] ?: d.collapseRelatedByDefault,
             showUnwatchedOnlyInSubs = this[Keys.showUnwatchedOnlyInSubs] ?: d.showUnwatchedOnlyInSubs,
             nightOledDimmerAlpha = this[Keys.nightOledDimmerAlpha] ?: d.nightOledDimmerAlpha,
@@ -285,6 +297,7 @@ class AppPreferences(private val context: Context) {
         this[Keys.monoAudioMergeEnabled] = next.monoAudioMergeEnabled
         this[Keys.keepScreenDimmedAwakeLock] = next.keepScreenDimmedAwakeLock
         this[Keys.audioOnlyMode] = next.audioOnlyMode
+        this[Keys.launchInAudioOnly] = next.launchInAudioOnly
         this[Keys.autoplayEnabled] = next.autoplayEnabled
         this[Keys.resumePlaybackEnabled] = next.resumePlaybackEnabled
         this[Keys.alwaysStartFromBeginning] = next.alwaysStartFromBeginning
@@ -295,6 +308,8 @@ class AppPreferences(private val context: Context) {
         this[Keys.stripShortsEverywhere] = next.stripShortsEverywhere
         this[Keys.defaultStartTab] = next.defaultStartTab.name
         this[Keys.collapseCommentsByDefault] = next.collapseCommentsByDefault
+        this[Keys.enableComments] = next.enableComments
+        this[Keys.enableDescription] = next.enableDescription
         this[Keys.collapseRelatedByDefault] = next.collapseRelatedByDefault
         this[Keys.showUnwatchedOnlyInSubs] = next.showUnwatchedOnlyInSubs
         this[Keys.nightOledDimmerAlpha] = next.nightOledDimmerAlpha

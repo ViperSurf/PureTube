@@ -98,21 +98,17 @@ fun VideoCardItem(
         (prefs.protectedMediaType == ProtectedMediaType.IMAGES_ONLY ||
             prefs.protectedMediaType == ProtectedMediaType.BOTH_IMAGES_AND_VIDEOS)
 
-    val request = remember(item.thumbnailUrl, peeked, prefs.blurTargetGender, prefs.blurVisualStyle) {
-        val builder = ImageRequest.Builder(context).data(item.thumbnailUrl)
-        if (imagesProtected) {
-            builder.transformations(
-                HaramBlurCoilTransformation(
-                    engine = app.haramBlurEngine,
-                    targetGender = prefs.blurTargetGender,
-                    visualStyle = prefs.blurVisualStyle,
-                    sensitivity = prefs.detectionSensitivity,
-                    blurIntensity = prefs.blurIntensityRadius,
-                    isManuallyPeeked = peeked
-                )
-            )
-        }
-        builder.build()
+    val request = remember(
+        item.thumbnailUrl, peeked, prefs.blurTargetGender, prefs.blurVisualStyle,
+        prefs.detectionSensitivity, prefs.blurIntensityRadius, imagesProtected
+    ) {
+        buildProtectedThumbnailRequest(
+            context = context,
+            engine = app.haramBlurEngine,
+            url = item.thumbnailUrl,
+            prefs = prefs,
+            peeked = peeked
+        )
     }
 
     Column(
@@ -444,4 +440,37 @@ fun formatDuration(totalSeconds: Long): String {
     val m = (totalSeconds % 3600) / 60
     val s = totalSeconds % 60
     return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+}
+
+/**
+ * Shared HaramBlur-protected thumbnail request (v1.3): every feed surface
+ * (cards, BOTH rows, thumbnail cells) loads thumbnails through this so the
+ * Coil pre-blur transformation applies everywhere, not just on full cards.
+ * Peek is per-card and defaults to NOT peeked — a face thumbnail comes out
+ * blurred by default.
+ */
+fun buildProtectedThumbnailRequest(
+    context: android.content.Context,
+    engine: com.puretube.app.haramblur.engine.HaramBlurEngine,
+    url: String,
+    prefs: com.puretube.app.data.local.datastore.AppPreferencesState,
+    peeked: Boolean
+): ImageRequest {
+    val imagesProtected = prefs.protectionScope != ProtectionScope.OFF &&
+        (prefs.protectedMediaType == ProtectedMediaType.IMAGES_ONLY ||
+            prefs.protectedMediaType == ProtectedMediaType.BOTH_IMAGES_AND_VIDEOS)
+    val builder = ImageRequest.Builder(context).data(url)
+    if (imagesProtected) {
+        builder.transformations(
+            HaramBlurCoilTransformation(
+                engine = engine,
+                targetGender = prefs.blurTargetGender,
+                visualStyle = prefs.blurVisualStyle,
+                sensitivity = prefs.detectionSensitivity,
+                blurIntensity = prefs.blurIntensityRadius,
+                isManuallyPeeked = peeked
+            )
+        )
+    }
+    return builder.build()
 }

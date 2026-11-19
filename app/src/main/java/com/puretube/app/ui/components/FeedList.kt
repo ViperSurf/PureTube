@@ -24,6 +24,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -143,6 +144,11 @@ fun FeedListStandalone(
 
 @Composable
 fun ThumbnailCell(item: FeedItem, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val app = context.applicationContext as PureTubeApp
+    val thumbRequest = remember(item.thumbnailUrl, app.currentPrefs) {
+        buildProtectedThumbnailRequest(context, app.haramBlurEngine, item.thumbnailUrl, app.currentPrefs, peeked = false)
+    }
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -152,7 +158,7 @@ fun ThumbnailCell(item: FeedItem, onClick: () -> Unit, modifier: Modifier = Modi
             .clickable { onClick() }
     ) {
         AsyncImage(
-            model = item.thumbnailUrl,
+            model = thumbRequest,
             contentDescription = item.title,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxWidth()
@@ -184,6 +190,11 @@ fun BothRow(
         ThumbnailScale.NORMAL -> 128.dp
         ThumbnailScale.LARGE -> 176.dp
     }
+    val context = LocalContext.current
+    val app = context.applicationContext as PureTubeApp
+    val thumbRequest = remember(item.thumbnailUrl, app.currentPrefs) {
+        buildProtectedThumbnailRequest(context, app.haramBlurEngine, item.thumbnailUrl, app.currentPrefs, peeked = false)
+    }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -199,7 +210,7 @@ fun BothRow(
                 .background(Color(0xFF111111))
         ) {
             AsyncImage(
-                model = item.thumbnailUrl,
+                model = thumbRequest,
                 contentDescription = item.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxWidth()
@@ -361,5 +372,44 @@ fun VideoOptionsButton(item: FeedItem) {
     }
     if (showPlaylistDialog) {
         AddToPlaylistDialog(item = item, onDismiss = { showPlaylistDialog = false })
+    }
+}
+
+/**
+ * Shared feed display controls (v1.3): layout mode (List / Grid / Both /
+ * Thumbnail only / Title only), thumbnail scale (Compact / Normal / Large)
+ * and grid columns (2/3/4) — one control row, same shared prefs, used by
+ * Search, Home/Subscriptions, Library, Channel and Playlist screens.
+ */
+@Composable
+fun FeedDisplayControls(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val app = context.applicationContext as PureTubeApp
+    val scope = rememberCoroutineScope()
+    val prefs by app.preferences.state.collectAsState(initial = app.currentPrefs)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TextButton(onClick = {
+            val values = FeedLayout.entries
+            val next = values[(prefs.feedLayout.ordinal + 1) % values.size]
+            scope.launch { app.preferences.update { it.copy(feedLayout = next) } }
+        }) { Text("Layout: ${prefs.feedLayout.name}", fontSize = 12.sp) }
+        TextButton(onClick = {
+            val values = ThumbnailScale.entries
+            val next = values[(prefs.feedThumbnailScale.ordinal + 1) % values.size]
+            scope.launch { app.preferences.update { it.copy(feedThumbnailScale = next) } }
+        }) { Text("Size: ${prefs.feedThumbnailScale.name}", fontSize = 12.sp) }
+        if (prefs.feedLayout == FeedLayout.GRID || prefs.feedLayout == FeedLayout.THUMBNAIL_ONLY) {
+            TextButton(onClick = {
+                val options = listOf(2, 3, 4)
+                val idx = options.indexOf(prefs.gridColumns).let { if (it < 0) 0 else it }
+                scope.launch {
+                    app.preferences.update { it.copy(gridColumns = options[(idx + 1) % options.size]) }
+                }
+            }) { Text("Columns: ${prefs.gridColumns}", fontSize = 12.sp) }
+        }
     }
 }
