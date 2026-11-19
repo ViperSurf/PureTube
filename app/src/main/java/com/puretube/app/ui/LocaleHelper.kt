@@ -20,7 +20,7 @@ import java.util.Locale
  *   configuration carrying that locale, and the settings row calls
  *   `Activity.recreate()` so the change is visible immediately.
  *
- * Core UI strings live in res/values*/strings.xml (en/ar/es/fr/tr/ur);
+ * Core UI strings live in the res values folders (en/ar/es/fr/tr/ur);
  * long-tail strings stay English (see README).
  */
 object LocaleHelper {
