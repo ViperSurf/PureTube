@@ -813,6 +813,53 @@ fun FlatSettingsScreen() {
             "When a video has several audio tracks, PureTube prefers this language. Original keeps the uploader's main track at the best quality.") {
             CycleButton(prefs.preferredAudioLanguage.name) { cycleAudioLanguage() }
         },
+        SettingRowDef("8. Captions", "Caption Text Size",
+            "How large caption text appears over the video: Small, Medium, Large or Extra large. Pick your caption language per video from the Captions button in the player; PureTube remembers it for the next video.") {
+            val labels = mapOf(
+                com.puretube.app.data.local.datastore.CaptionTextSize.SMALL to "Small",
+                com.puretube.app.data.local.datastore.CaptionTextSize.MEDIUM to "Medium",
+                com.puretube.app.data.local.datastore.CaptionTextSize.LARGE to "Large",
+                com.puretube.app.data.local.datastore.CaptionTextSize.EXTRA_LARGE to "Extra large"
+            )
+            CycleButton(labels[prefs.captionTextSize] ?: "Medium") {
+                val values = com.puretube.app.data.local.datastore.CaptionTextSize.entries
+                val next = values[(prefs.captionTextSize.ordinal + 1) % values.size]
+                scope.launch { app.preferences.update { it.copy(captionTextSize = next) } }
+            }
+        },
+        SettingRowDef("8. Captions", "Caption Text Colour",
+            "The colour of caption text over the video: White (default), Yellow or Cyan.") {
+            val labels = mapOf(
+                com.puretube.app.data.local.datastore.CaptionTextColor.WHITE to "White",
+                com.puretube.app.data.local.datastore.CaptionTextColor.YELLOW to "Yellow",
+                com.puretube.app.data.local.datastore.CaptionTextColor.CYAN to "Cyan"
+            )
+            CycleButton(labels[prefs.captionTextColor] ?: "White") {
+                val values = com.puretube.app.data.local.datastore.CaptionTextColor.entries
+                val next = values[(prefs.captionTextColor.ordinal + 1) % values.size]
+                scope.launch { app.preferences.update { it.copy(captionTextColor = next) } }
+            }
+        },
+        SettingRowDef("8. Captions", "Caption Background",
+            "What sits behind caption text: Nothing (text only), a Translucent dark band (default), or a solid Black band for maximum readability.") {
+            val labels = mapOf(
+                com.puretube.app.data.local.datastore.CaptionBackground.NONE to "None",
+                com.puretube.app.data.local.datastore.CaptionBackground.TRANSLUCENT to "Translucent",
+                com.puretube.app.data.local.datastore.CaptionBackground.BLACK to "Black"
+            )
+            CycleButton(labels[prefs.captionBackground] ?: "Translucent") {
+                val values = com.puretube.app.data.local.datastore.CaptionBackground.entries
+                val next = values[(prefs.captionBackground.ordinal + 1) % values.size]
+                scope.launch { app.preferences.update { it.copy(captionBackground = next) } }
+            }
+        },
+        SettingRowDef("8. Captions", "Bold Caption Text",
+            "Renders caption text in bold, which some people find easier to read over bright video.") {
+            Switch(
+                checked = prefs.captionBold,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(captionBold = v) } } }
+            )
+        },
         SettingRowDef("3. Focus & Feed Filters", "Thumbnail Scale",
             "How large video thumbnails and cards are in search and feeds: Compact, Normal, or Large.") {
             CycleButton(prefs.feedThumbnailScale.name) { cycleThumbnailScale() }
@@ -936,6 +983,10 @@ fun FlatSettingsScreen() {
                 Text(
                     "Sample sequence: sampled ${samplerDiag.sampledSequence} / drawn ${samplerDiag.drawnSequence}",
                     color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "While a video plays, 'sampled' should keep climbing and 'drawn' should track it. If sampled climbs but drawn stays stuck, the overlay is frozen — that is the v2.0 bug v2.1 fixed.",
+                    color = PureTextSecondary, fontSize = 12.sp
                 )
                 Text(
                     "Last sample duration: ${samplerDiag.lastSampleDurationMs} ms",

@@ -235,6 +235,21 @@ fun VideoPlayerScreen(
     var repliesOpen by remember(videoId) { mutableStateOf<Set<String>>(emptySet()) }
     var sleepMenuOpen by remember { mutableStateOf(false) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
+
+    // ---- v2.1 captions + audio tracks ----
+    var selectedCaption by remember(videoId) {
+        mutableStateOf<com.puretube.app.data.remote.extractor.SubtitleTrackInfo?>(null)
+    }
+    var captionTouched by remember(videoId) { mutableStateOf(false) }
+    var captionCues by remember(videoId) {
+        mutableStateOf<List<com.puretube.app.domain.CaptionParser.Cue>>(emptyList())
+    }
+    var captionMenuOpen by remember { mutableStateOf(false) }
+    var audioMenuOpen by remember { mutableStateOf(false) }
+    var audioOptions by remember(videoId) {
+        mutableStateOf<List<com.puretube.app.domain.AudioTrackLogic.Option>>(emptyList())
+    }
+    var selectedAudioKey by remember(videoId) { mutableStateOf<String?>(null) }
     var actionStatus by remember(videoId) { mutableStateOf("") }
     var sleepEndedNote by remember(videoId) { mutableStateOf(false) }
     // v2.0 account actions: -1 disliked, 0 none, 1 liked (optimistic, rolled back on failure).
@@ -532,6 +547,115 @@ fun VideoPlayerScreen(
             app.playerController.markSessionLoaded(stream.videoId, stream)
             true
         }.getOrDefault(false)
+    }
+
+    /** v2.1: apply an audio option — Media3 override for live track groups, preferred-language steer for extractor entries. */
+    fun selectAudioOption(option: com.puretube.app.domain.AudioTrackLogic.Option) {
+        selectedAudioKey = option.key
+        val activeController = controller ?: return
+        if (option.isExtractorEntry) {
+            option.languageCode?.takeIf { it.isNotBlank() }?.let { code ->
+                runCatching {
+                    activeController.setTrackSelectionParameters(
+                        activeController.trackSelectionParameters.buildUpon()
+                            .setPreferredAudioLanguage(code)
+                            .build()
+                    )
+                }
+            }
+            return
+        }
+        runCatching {
+            val group = activeController.currentTracks.groups
+                .getOrNull(option.groupIndex) ?: return
+            activeController.setTrackSelectionParameters(
+                activeController.trackSelectionParameters.buildUpon()
+                    .setOverrideForType(
+                        androidx.media3.common.TrackSelectionOverride(
+                            group.mediaTrackGroup, option.trackIndex
+                        )
+                    )
+                    .build()
+            )
+        }
+    }
+
+    // v2.1: when a stream resolves, honour the preferred audio language
+    // and the persisted caption language.
+    LaunchedEffect(resolved, controller) {
+        val stream = resolved ?: return@LaunchedEffect
+        val activeController = controller ?: return@LaunchedEffect
+        prefs.preferredAudioLanguageCode()?.let { code ->
+            runCatching {
+                activeController.setTrackSelectionParameters(
+                    activeController.trackSelectionParameters.buildUpon()
+                        .setPreferredAudioLanguage(code)
+                        .build()
+                )
+            }
+        }
+        if (!captionTouched && prefs.captionLanguageCode.isNotBlank()) {
+            selectedCaption = com.puretube.app.domain.CaptionTrackLogic.matchLanguage(
+                stream.subtitles, prefs.captionLanguageCode
+            )
+        }
+    }
+
+    // v2.1: rebuild the audio option list from the player's live track
+    // groups (DASH/HLS renditions), falling back to the extractor list.
+    LaunchedEffect(resolved, playerState.isPlaying, playerState.positionMs) {
+        val stream = resolved ?: return@LaunchedEffect
+        val activeController = controller
+        val media3Options = if (activeController != null) {
+            runCatching {
+                val allGroups = activeController.currentTracks.groups
+                com.puretube.app.domain.AudioTrackLogic.optionsFromGroups(
+                    allGroups.mapIndexedNotNull { groupIndex, group ->
+                        if (group.type != androidx.media3.common.C.TRACK_TYPE_AUDIO) {
+                            null
+                        } else {
+                            com.puretube.app.domain.AudioTrackLogic.GroupInfo(
+                                groupIndex = groupIndex,
+                                formats = (0 until group.length).map { i ->
+                                    val format = group.getTrackFormat(i)
+                                    com.puretube.app.domain.AudioTrackLogic.FormatInfo(
+                                        language = format.language,
+                                        bitrate = format.bitrate,
+                                        label = format.label
+                                    )
+                                },
+                                selectedIndex = (0 until group.length)
+                                    .firstOrNull { group.isTrackSelected(it) } ?: -1
+                            )
+                        }
+                    }
+                )
+            }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        audioOptions = media3Options.ifEmpty {
+            com.puretube.app.domain.AudioTrackLogic.optionsFromExtractor(stream.audioTracks)
+        }
+        if (selectedAudioKey == null) {
+            selectedAudioKey = audioOptions.firstOrNull { it.isSelected }?.key
+        }
+    }
+
+    // v2.1: fetch + parse the selected caption track's cues.
+    LaunchedEffect(selectedCaption) {
+        val track = selectedCaption
+        captionCues = emptyList()
+        if (track == null) return@LaunchedEffect
+        captionCues = withContext(Dispatchers.IO) {
+            runCatching {
+                val request = okhttp3.Request.Builder().url(track.url).build()
+                app.okHttpClient.newCall(request).execute().use { resp ->
+                    val body = resp.body?.string().orEmpty()
+                    com.puretube.app.domain.CaptionParser.parse(body, track.format)
+                }
+            }.getOrDefault(emptyList())
+        }
     }
 
     // Service connection retry loop: never a silent dead end.
@@ -1072,6 +1196,45 @@ fun VideoPlayerScreen(
                 zeroFlashEnabled = prefs.zeroFlashSafePreBlur,
                 videoRect = displayedRect
             )
+            // v2.1 caption cue: the current cue of the selected track,
+            // styled by the caption preferences (size/colour/background/
+            // bold). Driven by the regular position poll.
+            val activeCue = if (selectedCaption != null) {
+                com.puretube.app.domain.CaptionParser.cueAt(
+                    captionCues, playerState.positionMs
+                )
+            } else {
+                null
+            }
+            if (activeCue != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 24.dp, vertical = 52.dp)
+                        .background(
+                            com.puretube.app.domain.CaptionStyleMath.backgroundColor(
+                                prefs.captionBackground
+                            ),
+                            RoundedCornerShape(4.dp)
+                        )
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = activeCue,
+                        color = com.puretube.app.domain.CaptionStyleMath.textColor(
+                            prefs.captionTextColor
+                        ),
+                        fontSize = com.puretube.app.domain.CaptionStyleMath
+                            .textSizeSp(prefs.captionTextSize).sp,
+                        fontWeight = if (prefs.captionBold) {
+                            FontWeight.Bold
+                        } else {
+                            FontWeight.Normal
+                        },
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
             volumeNotice?.let { msg ->
                 // v2.0 volume-zero rule notice: in-player text, not a popup.
                 Text(
@@ -1252,6 +1415,94 @@ fun VideoPlayerScreen(
                         }
                     }
                 )
+                Box {
+                    StateChip(
+                        label = stringResource(com.puretube.app.R.string.player_captions) +
+                            (selectedCaption?.let { ": ${it.languageCode}" } ?: ""),
+                        active = selectedCaption != null,
+                        activeColor = PureAccent,
+                        onClick = { captionMenuOpen = true }
+                    )
+                    DropdownMenu(
+                        expanded = captionMenuOpen,
+                        onDismissRequest = { captionMenuOpen = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Off") },
+                            onClick = {
+                                captionMenuOpen = false
+                                captionTouched = true
+                                selectedCaption = null
+                                scope.launch {
+                                    app.preferences.update { it.copy(captionLanguageCode = "") }
+                                }
+                            }
+                        )
+                        val captionTracks = resolved?.subtitles ?: emptyList()
+                        captionTracks.forEach { track ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        track.label +
+                                            (if (track.isAutoGenerated) " (auto)" else "") +
+                                            (if (track == selectedCaption) " ✓" else "")
+                                    )
+                                },
+                                onClick = {
+                                    captionMenuOpen = false
+                                    captionTouched = true
+                                    selectedCaption = track
+                                    scope.launch {
+                                        app.preferences.update {
+                                            it.copy(captionLanguageCode = track.languageCode)
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                        if (captionTracks.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("No captions for this video") },
+                                onClick = { captionMenuOpen = false }
+                            )
+                        }
+                    }
+                }
+                Box {
+                    StateChip(
+                        label = stringResource(com.puretube.app.R.string.player_audio) +
+                            (audioOptions.firstOrNull { it.key == selectedAudioKey }
+                                ?.languageCode?.let { ": $it" } ?: ""),
+                        active = audioOptions.size > 1,
+                        activeColor = PureAccent,
+                        onClick = { audioMenuOpen = true }
+                    )
+                    DropdownMenu(
+                        expanded = audioMenuOpen,
+                        onDismissRequest = { audioMenuOpen = false }
+                    ) {
+                        if (audioOptions.isEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("Audio track unavailable") },
+                                onClick = { audioMenuOpen = false }
+                            )
+                        }
+                        audioOptions.forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        option.label +
+                                            (if (option.key == selectedAudioKey) " ✓" else "")
+                                    )
+                                },
+                                onClick = {
+                                    audioMenuOpen = false
+                                    selectAudioOption(option)
+                                }
+                            )
+                        }
+                    }
+                }
                 StateChip(
                     label = stringResource(com.puretube.app.R.string.player_minimize),
                     active = false,
