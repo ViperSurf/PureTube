@@ -78,7 +78,10 @@ data class RawCommentItem(
     val uploaderUrl: String? = null,
     val text: String? = null,
     val likeCount: Int = -1,
-    val uploaderAvatars: List<RawThumb> = emptyList()
+    val uploaderAvatars: List<RawThumb> = emptyList(),
+    val replyCount: Int = -1,
+    val repliesPageUrl: String? = null,
+    val repliesToken: String? = null
 )
 
 object ExtractorItemMapper {
@@ -137,7 +140,10 @@ object ExtractorItemMapper {
             authorChannelId = raw.uploaderUrl?.substringAfterLast("/").orEmpty(),
             text = raw.text.orEmpty(),
             likeCount = raw.likeCount,
-            avatarUrl = bestThumbUrl(raw.uploaderAvatars)
+            avatarUrl = bestThumbUrl(raw.uploaderAvatars),
+            replyCount = raw.replyCount,
+            repliesPageUrl = raw.repliesPageUrl.orEmpty(),
+            repliesToken = raw.repliesToken.orEmpty()
         )
 }
 

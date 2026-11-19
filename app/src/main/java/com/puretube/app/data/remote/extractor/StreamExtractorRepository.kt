@@ -556,6 +556,23 @@ class StreamExtractorRepository(
         }
     }
 
+    private fun org.schabi.newpipe.extractor.comments.CommentsInfoItem.toCommentItemOrNull(): CommentItem? =
+        runCatching {
+            ExtractorItemMapper.toCommentItem(
+                RawCommentItem(
+                    commentId = safe { commentId },
+                    uploaderName = safe { uploaderName },
+                    uploaderUrl = safe { uploaderUrl },
+                    text = safe { commentText?.content },
+                    likeCount = safe { likeCount } ?: -1,
+                    uploaderAvatars = imageThumbs(safe { uploaderAvatars }),
+                    replyCount = safe { replyCount } ?: -1,
+                    repliesPageUrl = safe { replies?.url },
+                    repliesToken = safe { replies?.id }
+                )
+            )
+        }.getOrNull()
+
     /** Comments for a video. Best-effort; empty when disabled/unavailable. */
     suspend fun fetchComments(videoId: String): Result<List<CommentItem>> =
         withContext(Dispatchers.IO) {
@@ -564,20 +581,30 @@ class StreamExtractorRepository(
                 val info = org.schabi.newpipe.extractor.comments.CommentsInfo
                     .getInfo(ServiceList.YouTube, url)
                 if (safe { info.isCommentsDisabled } == true) return@runCatching emptyList()
-                safe { info.relatedItems }?.filterNotNull().orEmpty().mapNotNull { item ->
-                    runCatching {
-                        ExtractorItemMapper.toCommentItem(
-                            RawCommentItem(
-                                commentId = safe { item.commentId },
-                                uploaderName = safe { item.uploaderName },
-                                uploaderUrl = safe { item.uploaderUrl },
-                                text = safe { item.commentText?.content },
-                                likeCount = safe { item.likeCount } ?: -1,
-                                uploaderAvatars = imageThumbs(safe { item.uploaderAvatars })
-                            )
-                        )
-                    }.getOrNull()
-                }
+                safe { info.relatedItems }?.filterNotNull().orEmpty()
+                    .mapNotNull { it.toCommentItemOrNull() }
+            }
+        }
+
+    /**
+     * Comment replies (v1.4), using the real NewPipeExtractor 0.27.1 API:
+     * CommentsInfoItem.getReplyCount() says how many replies exist and
+     * CommentsInfoItem.getReplies() returns the continuation
+     * org.schabi.newpipe.extractor.Page (for YouTube: Page(url = video
+     * url, id = continuation token)). Replies are fetched with
+     * CommentsInfo.getMoreItems(service, url, repliesPage), which routes
+     * to CommentsExtractor.getPage(page). The CommentItem carries the
+     * page's url+token so this call can rebuild the Page exactly.
+     */
+    suspend fun fetchCommentReplies(comment: CommentItem): Result<List<CommentItem>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                if (!comment.hasReplies) error("This comment has no replies page")
+                val page = Page(comment.repliesPageUrl, comment.repliesToken)
+                val itemsPage = org.schabi.newpipe.extractor.comments.CommentsInfo
+                    .getMoreItems(ServiceList.YouTube, comment.repliesPageUrl, page)
+                safe { itemsPage.items }?.filterNotNull().orEmpty()
+                    .mapNotNull { it.toCommentItemOrNull() }
             }
         }
 

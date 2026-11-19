@@ -147,7 +147,7 @@ fun ThumbnailCell(item: FeedItem, onClick: () -> Unit, modifier: Modifier = Modi
     val context = LocalContext.current
     val app = context.applicationContext as PureTubeApp
     val thumbRequest = remember(item.thumbnailUrl, app.currentPrefs) {
-        buildProtectedThumbnailRequest(context, app.haramBlurEngine, item.thumbnailUrl, app.currentPrefs, peeked = false)
+        buildProtectedThumbnailRequest(context, app.haramBlurEngine, item.thumbnailUrl, app.currentPrefs, peeked = false, channelId = item.channelId, channelName = item.channelName, exemptChannelKeys = app.exemptChannelKeys.value)
     }
     Box(
         modifier = modifier
@@ -193,7 +193,7 @@ fun BothRow(
     val context = LocalContext.current
     val app = context.applicationContext as PureTubeApp
     val thumbRequest = remember(item.thumbnailUrl, app.currentPrefs) {
-        buildProtectedThumbnailRequest(context, app.haramBlurEngine, item.thumbnailUrl, app.currentPrefs, peeked = false)
+        buildProtectedThumbnailRequest(context, app.haramBlurEngine, item.thumbnailUrl, app.currentPrefs, peeked = false, channelId = item.channelId, channelName = item.channelName, exemptChannelKeys = app.exemptChannelKeys.value)
     }
     Row(
         modifier = Modifier

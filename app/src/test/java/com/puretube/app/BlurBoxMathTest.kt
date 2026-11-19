@@ -14,12 +14,25 @@ class BlurBoxMathTest {
 
     @Test
     fun expandForHairAndShouldersPadsAndClamps() {
+        // v1.4 face/head-only padding: 0.20 sides, 0.25 top, 0.20 bottom.
         val face = NormalizedRect(0.4f, 0.3f, 0.6f, 0.5f) // w=0.2 h=0.2
         val expanded = BlurBoxMath.expandForHairAndShoulders(face)
-        assertEquals(0.4f - 0.09f, expanded.left, 0.001f)
-        assertEquals(0.3f - 0.08f, expanded.top, 0.001f)
-        assertEquals(0.6f + 0.09f, expanded.right, 0.001f)
-        assertEquals(0.5f + 0.17f, expanded.bottom, 0.001f)
+        assertEquals(0.4f - 0.04f, expanded.left, 0.001f)
+        assertEquals(0.3f - 0.05f, expanded.top, 0.001f)
+        assertEquals(0.6f + 0.04f, expanded.right, 0.001f)
+        assertEquals(0.5f + 0.04f, expanded.bottom, 0.001f)
+    }
+
+    @Test
+    fun expandFaceBoxUsesFaceOnlyPadding() {
+        val face = NormalizedRect(0.4f, 0.3f, 0.6f, 0.5f)
+        val expanded = BlurBoxMath.expandFaceBox(face)
+        assertEquals(0.36f, expanded.left, 0.001f)
+        assertEquals(0.25f, expanded.top, 0.001f)
+        assertEquals(0.64f, expanded.right, 0.001f)
+        assertEquals(0.54f, expanded.bottom, 0.001f)
+        // No body coverage: bottom stays well above the old +0.85 pad (0.67).
+        assertTrue(expanded.bottom < 0.6f)
     }
 
     @Test

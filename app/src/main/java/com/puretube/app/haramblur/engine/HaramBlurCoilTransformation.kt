@@ -21,7 +21,11 @@ class HaramBlurCoilTransformation(
     private val visualStyle: BlurVisualStyle,
     private val sensitivity: Float,
     private val blurIntensity: Float,
-    private val isManuallyPeeked: Boolean
+    private val isManuallyPeeked: Boolean,
+    /** v1.4: the item's channel — exempt channels are never blurred. */
+    private val channelId: String = "",
+    private val channelName: String = "",
+    private val exemptChannelKeys: Set<String> = emptySet()
 ) : Transformation() {
 
     // v1.3: the key carries a model revision token. Pre-v1.3 builds cached
@@ -31,10 +35,15 @@ class HaramBlurCoilTransformation(
     // effective target (all-faces fallback when no gender model is loaded)
     // is part of the key too.
     override val cacheKey: String =
-        "haramblur_v13model_${com.puretube.app.domain.HaramBlurPolicy.effectiveTarget(targetGender, engine.hasGenderModel)}_${visualStyle}_${sensitivity}_${blurIntensity}_$isManuallyPeeked"
+        "haramblur_v14model_${com.puretube.app.domain.HaramBlurPolicy.effectiveTarget(targetGender, engine.hasGenderModel)}_${visualStyle}_${sensitivity}_${blurIntensity}_${isManuallyPeeked}_exempt${com.puretube.app.domain.HaramBlurExemptions.normalizeChannelId(channelId)}_${exemptChannelKeys.hashCode()}"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
         if (isManuallyPeeked) return input
+        // v1.4: channel exemption — this channel is never blurred.
+        if (!com.puretube.app.domain.HaramBlurExemptions.shouldBlurForChannel(
+                exemptChannelKeys, channelId, channelName
+            )
+        ) return input
         val regions = runCatching {
             engine.detectRegionsToBlur(
                 sourceBitmap = input,

@@ -52,6 +52,19 @@ class PureTubeApp : Application() {
     /** Search state that survives navigation (v1.2). */
     val searchSession = com.puretube.app.ui.screens.search.SearchSession()
 
+    /** Live-video sampler diagnostics (v1.4), read by Settings. */
+    val samplerDiagnostics = kotlinx.coroutines.flow.MutableStateFlow(
+        com.puretube.app.haramblur.video.SamplerDiagnostics()
+    )
+
+    /**
+     * HaramBlur-exempt channel keys (v1.4): EXEMPT_CHANNEL blocklist rows,
+     * pattern = channelId (channel name also kept for the name fallback).
+     * Read in app scope from the blocklist DAO; crash-safe (any failure
+     * leaves the previous set in place).
+     */
+    val exemptChannelKeys = kotlinx.coroutines.flow.MutableStateFlow<Set<String>>(emptySet())
+
     /** Latest preferences snapshot for synchronous readers (image pipeline, sampler). */
     @Volatile
     var currentPrefs: AppPreferencesState = AppPreferencesState()
@@ -88,6 +101,17 @@ class PureTubeApp : Application() {
         appScope.launch {
             currentPrefs = preferences.state.first()
             preferences.state.collect { currentPrefs = it }
+        }
+        appScope.launch {
+            runCatching {
+                database.blocklistDao().observeAll().collect { rows ->
+                    exemptChannelKeys.value = rows
+                        .filter { it.filterType == com.puretube.app.data.local.entity.FilterType.EXEMPT_CHANNEL }
+                        .map { it.pattern }
+                        .filter { it.isNotBlank() }
+                        .toSet()
+                }
+            }
         }
     }
 }

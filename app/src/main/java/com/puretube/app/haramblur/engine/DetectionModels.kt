@@ -39,11 +39,16 @@ data class DetectedBlurRegion(
 /** Pure bounding-box math: expansion, IoU and non-max suppression. No Android types. */
 object BlurBoxMath {
 
-    /** Expands a face box to cover hair (top) and shoulders (bottom). */
-    fun expandForHairAndShoulders(faceRect: NormalizedRect): NormalizedRect {
-        val widthPad = faceRect.width * 0.45f
-        val topPad = faceRect.height * 0.40f
-        val bottomPad = faceRect.height * 0.85f
+    /**
+     * Expands a detected face box modestly: face/head only — chin/neck,
+     * no body. v1.4 shrink: ~0.20 width each side, 0.25 top (hair),
+     * 0.20 bottom (chin/neck). The old hair-and-shoulders expansion
+     * (0.45 / 0.40 / 0.85) covered far more than the face.
+     */
+    fun expandFaceBox(faceRect: NormalizedRect): NormalizedRect {
+        val widthPad = faceRect.width * 0.20f
+        val topPad = faceRect.height * 0.25f
+        val bottomPad = faceRect.height * 0.20f
         return NormalizedRect(
             (faceRect.left - widthPad).coerceAtLeast(0f),
             (faceRect.top - topPad).coerceAtLeast(0f),
@@ -51,6 +56,9 @@ object BlurBoxMath {
             (faceRect.bottom + bottomPad).coerceAtMost(1f)
         )
     }
+
+    /** Backwards-compatible alias; same face/head-only semantics as [expandFaceBox]. */
+    fun expandForHairAndShoulders(faceRect: NormalizedRect): NormalizedRect = expandFaceBox(faceRect)
 
     fun computeIoU(a: NormalizedRect, b: NormalizedRect): Float {
         val interLeft = max(a.left, b.left)

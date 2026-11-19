@@ -98,16 +98,20 @@ fun VideoCardItem(
         (prefs.protectedMediaType == ProtectedMediaType.IMAGES_ONLY ||
             prefs.protectedMediaType == ProtectedMediaType.BOTH_IMAGES_AND_VIDEOS)
 
+    val exemptKeys by app.exemptChannelKeys.collectAsState()
     val request = remember(
-        item.thumbnailUrl, peeked, prefs.blurTargetGender, prefs.blurVisualStyle,
-        prefs.detectionSensitivity, prefs.blurIntensityRadius, imagesProtected
+        item.thumbnailUrl, item.channelId, peeked, prefs.blurTargetGender, prefs.blurVisualStyle,
+        prefs.detectionSensitivity, prefs.blurIntensityRadius, imagesProtected, exemptKeys
     ) {
         buildProtectedThumbnailRequest(
             context = context,
             engine = app.haramBlurEngine,
             url = item.thumbnailUrl,
             prefs = prefs,
-            peeked = peeked
+            peeked = peeked,
+            channelId = item.channelId,
+            channelName = item.channelName,
+            exemptChannelKeys = exemptKeys
         )
     }
 
@@ -454,7 +458,10 @@ fun buildProtectedThumbnailRequest(
     engine: com.puretube.app.haramblur.engine.HaramBlurEngine,
     url: String,
     prefs: com.puretube.app.data.local.datastore.AppPreferencesState,
-    peeked: Boolean
+    peeked: Boolean,
+    channelId: String = "",
+    channelName: String = "",
+    exemptChannelKeys: Set<String> = emptySet()
 ): ImageRequest {
     val imagesProtected = prefs.protectionScope != ProtectionScope.OFF &&
         (prefs.protectedMediaType == ProtectedMediaType.IMAGES_ONLY ||
@@ -468,7 +475,10 @@ fun buildProtectedThumbnailRequest(
                 visualStyle = prefs.blurVisualStyle,
                 sensitivity = prefs.detectionSensitivity,
                 blurIntensity = prefs.blurIntensityRadius,
-                isManuallyPeeked = peeked
+                isManuallyPeeked = peeked,
+                channelId = channelId,
+                channelName = channelName,
+                exemptChannelKeys = exemptChannelKeys
             )
         )
     }

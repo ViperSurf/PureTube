@@ -85,5 +85,7 @@ data class BlockedFilterEntity(
 
 enum class FilterType {
     KEYWORD, CHANNEL_ID, CHANNEL_NAME,
-    COMMENT_KEYWORD, COMMENT_USERNAME, COMMENT_CHANNEL_ID
+    COMMENT_KEYWORD, COMMENT_USERNAME, COMMENT_CHANNEL_ID,
+    /** v1.4: HaramBlur exemption — pattern is a channelId (name fallback). Stored as TEXT, no migration. */
+    EXEMPT_CHANNEL
 }

@@ -55,7 +55,11 @@ object SectionResets {
                 resumeAfterInterruption = d.resumeAfterInterruption,
                 requireAudioFocus = d.requireAudioFocus,
                 disableAndroidAuto = d.disableAndroidAuto,
-                sleepTimerDefaultMinutes = d.sleepTimerDefaultMinutes
+                sleepTimerDefaultMinutes = d.sleepTimerDefaultMinutes,
+                controlsVisibility = d.controlsVisibility,
+                autoRotatePlayer = d.autoRotatePlayer,
+                unmuteRaisesVolume = d.unmuteRaisesVolume,
+                keepVideoPinnedWhileScrolling = d.keepVideoPinnedWhileScrolling
             )
             SECTION_3 -> state.copy(
                 stripShortsEverywhere = d.stripShortsEverywhere,
@@ -64,6 +68,7 @@ object SectionResets {
                 enableComments = d.enableComments,
                 enableDescription = d.enableDescription,
                 collapseRelatedByDefault = d.collapseRelatedByDefault,
+                doubleTapSearchResets = d.doubleTapSearchResets,
                 showUnwatchedOnlyInSubs = d.showUnwatchedOnlyInSubs,
                 nightOledDimmerAlpha = d.nightOledDimmerAlpha,
                 feedLayout = d.feedLayout,
@@ -82,6 +87,7 @@ object SectionResets {
                 deArrowTitlesEnabled = d.deArrowTitlesEnabled,
                 deArrowThumbnailsEnabled = d.deArrowThumbnailsEnabled,
                 returnYouTubeDislikeEnabled = d.returnYouTubeDislikeEnabled,
+                likesDisplay = d.likesDisplay,
                 fallbackPipedApiUrl = d.fallbackPipedApiUrl
             )
             SECTION_5 -> state.copy(

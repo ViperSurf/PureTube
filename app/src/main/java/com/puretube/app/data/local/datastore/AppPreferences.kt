@@ -28,6 +28,12 @@ enum class HistoryGroupMode { GROUPED_BY_DAY, CONTINUOUS }
 /** Feed thumbnail scale (v1.2). */
 enum class ThumbnailScale { COMPACT, NORMAL, LARGE }
 
+/** Player controls visibility (v1.4). */
+enum class ControlsVisibility { AUTO_HIDE, ALWAYS_VISIBLE }
+
+/** How the player shows like/dislike counts (v1.4). */
+enum class LikesDisplay { NUMBERS, PERCENTAGE, BOTH }
+
 /** App language; SYSTEM follows the phone. Applies on restart. */
 enum class AppLanguage(val code: String) {
     SYSTEM("SYSTEM"), ENGLISH("en"), ARABIC("ar"), SPANISH("es"),
@@ -81,6 +87,14 @@ data class AppPreferencesState(
     val requireAudioFocus: Boolean = true,
     val disableAndroidAuto: Boolean = true,
     val sleepTimerDefaultMinutes: Int = 15,
+    /** v1.4: player controls auto-hide while playing, or stay visible. */
+    val controlsVisibility: ControlsVisibility = ControlsVisibility.AUTO_HIDE,
+    /** v1.4: player may rotate with the device sensor; off locks portrait. */
+    val autoRotatePlayer: Boolean = true,
+    /** v1.4: unmuting on a silent device raises STREAM_MUSIC to ~40%. */
+    val unmuteRaisesVolume: Boolean = true,
+    /** v1.4: video + seek + chips stay pinned while the rest scrolls. */
+    val keepVideoPinnedWhileScrolling: Boolean = true,
     // Section 3: Focus, Shorts & Feed Filters
     val stripShortsEverywhere: Boolean = true,
     val defaultStartTab: DefaultStartTab = DefaultStartTab.SUBSCRIPTIONS,
@@ -90,6 +104,8 @@ data class AppPreferencesState(
     /** v1.3: when off, the description section is never shown. */
     val enableDescription: Boolean = true,
     val collapseRelatedByDefault: Boolean = true,
+    /** v1.4: tapping Search while already on Search clears the session. */
+    val doubleTapSearchResets: Boolean = true,
     val showUnwatchedOnlyInSubs: Boolean = false,
     val nightOledDimmerAlpha: Float = 0.0f,
     val feedLayout: FeedLayout = FeedLayout.LIST,
@@ -107,6 +123,8 @@ data class AppPreferencesState(
     val deArrowTitlesEnabled: Boolean = false,
     val deArrowThumbnailsEnabled: Boolean = false,
     val returnYouTubeDislikeEnabled: Boolean = true,
+    /** v1.4: how like/dislike counts render in the player. */
+    val likesDisplay: LikesDisplay = LikesDisplay.NUMBERS,
     val fallbackPipedApiUrl: String = "https://pipedapi.kavin.rocks",
     // Section 5: History, Queue & Library (v1.1)
     val watchHistoryEnabled: Boolean = true,
@@ -159,6 +177,12 @@ class AppPreferences(private val context: Context) {
         val requireAudioFocus = booleanPreferencesKey("require_audio_focus")
         val disableAndroidAuto = booleanPreferencesKey("disable_android_auto")
         val sleepTimerDefaultMinutes = intPreferencesKey("sleep_timer_default_minutes")
+        val controlsVisibility = stringPreferencesKey("controls_visibility")
+        val autoRotatePlayer = booleanPreferencesKey("auto_rotate_player")
+        val unmuteRaisesVolume = booleanPreferencesKey("unmute_raises_volume")
+        val keepVideoPinned = booleanPreferencesKey("keep_video_pinned")
+        val doubleTapSearchResets = booleanPreferencesKey("double_tap_search_resets")
+        val likesDisplay = stringPreferencesKey("likes_display")
         val stripShortsEverywhere = booleanPreferencesKey("strip_shorts_everywhere")
         val defaultStartTab = stringPreferencesKey("default_start_tab")
         val collapseCommentsByDefault = booleanPreferencesKey("collapse_comments_by_default")
@@ -236,6 +260,12 @@ class AppPreferences(private val context: Context) {
             requireAudioFocus = this[Keys.requireAudioFocus] ?: d.requireAudioFocus,
             disableAndroidAuto = this[Keys.disableAndroidAuto] ?: d.disableAndroidAuto,
             sleepTimerDefaultMinutes = this[Keys.sleepTimerDefaultMinutes] ?: d.sleepTimerDefaultMinutes,
+            controlsVisibility = enumOr(Keys.controlsVisibility, ControlsVisibility.entries.toTypedArray(), d.controlsVisibility),
+            autoRotatePlayer = this[Keys.autoRotatePlayer] ?: d.autoRotatePlayer,
+            unmuteRaisesVolume = this[Keys.unmuteRaisesVolume] ?: d.unmuteRaisesVolume,
+            keepVideoPinnedWhileScrolling = this[Keys.keepVideoPinned] ?: d.keepVideoPinnedWhileScrolling,
+            doubleTapSearchResets = this[Keys.doubleTapSearchResets] ?: d.doubleTapSearchResets,
+            likesDisplay = enumOr(Keys.likesDisplay, LikesDisplay.entries.toTypedArray(), d.likesDisplay),
             stripShortsEverywhere = this[Keys.stripShortsEverywhere] ?: d.stripShortsEverywhere,
             defaultStartTab = enumOr(Keys.defaultStartTab, DefaultStartTab.entries.toTypedArray(), d.defaultStartTab),
             collapseCommentsByDefault = this[Keys.collapseCommentsByDefault] ?: d.collapseCommentsByDefault,
@@ -305,6 +335,12 @@ class AppPreferences(private val context: Context) {
         this[Keys.requireAudioFocus] = next.requireAudioFocus
         this[Keys.disableAndroidAuto] = next.disableAndroidAuto
         this[Keys.sleepTimerDefaultMinutes] = next.sleepTimerDefaultMinutes
+        this[Keys.controlsVisibility] = next.controlsVisibility.name
+        this[Keys.autoRotatePlayer] = next.autoRotatePlayer
+        this[Keys.unmuteRaisesVolume] = next.unmuteRaisesVolume
+        this[Keys.keepVideoPinned] = next.keepVideoPinnedWhileScrolling
+        this[Keys.doubleTapSearchResets] = next.doubleTapSearchResets
+        this[Keys.likesDisplay] = next.likesDisplay.name
         this[Keys.stripShortsEverywhere] = next.stripShortsEverywhere
         this[Keys.defaultStartTab] = next.defaultStartTab.name
         this[Keys.collapseCommentsByDefault] = next.collapseCommentsByDefault

@@ -284,6 +284,10 @@ class PlayerController {
         return next
     }
 
+    /** v1.4: wired by MainActivity so unmuting can raise a silent device. */
+    @Volatile var audioManager: android.media.AudioManager? = null
+    @Volatile var unmuteRaisesVolumeProvider: () -> Boolean = { true }
+
     fun toggleMute() {
         val p = player ?: return
         if (p.volume > 0f) {
@@ -293,6 +297,23 @@ class PlayerController {
         } else {
             p.volume = previousVolume
             _state.value = _state.value.copy(isMuted = false)
+            // v1.4: unmuting while the DEVICE volume is 0 still sounds
+            // silent — raise STREAM_MUSIC to ~40% of max when the pref is on.
+            runCatching {
+                if (unmuteRaisesVolumeProvider()) {
+                    val am = audioManager ?: return@runCatching
+                    val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                    if (max > 0 &&
+                        am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) == 0
+                    ) {
+                        am.setStreamVolume(
+                            android.media.AudioManager.STREAM_MUSIC,
+                            com.puretube.app.domain.SwipeControlMath.unmuteVolume(max),
+                            0
+                        )
+                    }
+                }
+            }
         }
     }
 

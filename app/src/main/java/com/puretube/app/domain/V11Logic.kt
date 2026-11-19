@@ -71,8 +71,15 @@ data class CommentItem(
     val authorChannelId: String,
     val text: String,
     val likeCount: Int,
-    val avatarUrl: String = ""
-)
+    val avatarUrl: String = "",
+    /** v1.4 replies: count from the extractor (-1 = unknown/unsupported). */
+    val replyCount: Int = -1,
+    /** v1.4 replies: continuation page coordinates (url + token), if any. */
+    val repliesPageUrl: String = "",
+    val repliesToken: String = ""
+) {
+    val hasReplies: Boolean get() = replyCount > 0 && repliesToken.isNotBlank()
+}
 
 /** Comment blocklist + like filters. Pure + unit-tested. */
 object CommentFilters {
