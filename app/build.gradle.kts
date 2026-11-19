@@ -109,8 +109,6 @@ dependencies {
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
-    // v2.0: Keystore-backed encrypted storage for the account session cookies.
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("io.coil-kt.coil3:coil-compose:3.0.4")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.0.4")
 
