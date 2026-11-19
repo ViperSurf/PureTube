@@ -584,10 +584,32 @@ fun FlatSettingsScreen() {
             )
         },
         SettingRowDef("2. Playback, PiP & Audio", "Pause When Volume Hits Zero",
-            "When your phone's media volume reaches zero while a video is playing, PureTube pauses it. Raising the volume again never restarts playback on its own — press Play when you want it back.") {
+            "Master switch for the volume-zero rule: when your phone's media volume reaches zero while a video is playing, PureTube reacts (see the next setting). Turn this off to disable the rule completely.") {
             Switch(
                 checked = prefs.pauseOnVolumeZero,
                 onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(pauseOnVolumeZero = v) } } }
+            )
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "When Volume Hits Zero",
+            "What the volume-zero rule does first: Pause only (default), jump back 5, 10 or 15 seconds and keep playing silently, or jump back 10 seconds AND pause. The stop rule below still applies while the volume stays at zero.") {
+            val labels = mapOf(
+                com.puretube.app.data.local.datastore.VolumeZeroAction.PAUSE_ONLY to "Pause only",
+                com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_5 to "Rewind 5s",
+                com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_10 to "Rewind 10s",
+                com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_15 to "Rewind 15s",
+                com.puretube.app.data.local.datastore.VolumeZeroAction.REWIND_AND_PAUSE to "Rewind + pause"
+            )
+            CycleButton(labels[prefs.volumeZeroAction] ?: "Pause only") {
+                val values = com.puretube.app.data.local.datastore.VolumeZeroAction.entries
+                val next = values[(prefs.volumeZeroAction.ordinal + 1) % values.size]
+                scope.launch { app.preferences.update { it.copy(volumeZeroAction = next) } }
+            }
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "Resume When Volume Returns",
+            "OFF (default): after a volume-zero pause, raising the volume never restarts playback — press Play yourself. ON: if the volume-zero rule paused the video, playback continues by itself when the volume comes back. This never resumes a video you paused yourself, and never restarts a video the stop rule already stopped.") {
+            Switch(
+                checked = prefs.resumeOnVolumeReturn,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(resumeOnVolumeReturn = v) } } }
             )
         },
         SettingRowDef("2. Playback, PiP & Audio", "Stop If Volume Stays Zero",

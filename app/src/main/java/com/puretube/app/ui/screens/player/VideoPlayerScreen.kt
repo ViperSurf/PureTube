@@ -12,8 +12,12 @@ import android.view.View
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.input.pointer.changedToUpOrCanceled
+import androidx.compose.ui.input.pointer.positionChanged
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -262,6 +266,132 @@ fun VideoPlayerScreen(
         },
         label = "minimizeDragOffset"
     )
+
+    // v2.1 gesture arbitration state (see GestureClassifier).
+    val gestureClassifier = remember { com.puretube.app.domain.GestureClassifier() }
+    var dragZone by remember { mutableStateOf(0) } // -1 brightness, +1 volume, 0 none
+    var dragIsMinimize by remember { mutableStateOf(false) }
+    var lastDragDy by remember { mutableFloatStateOf(0f) }
+    var holdPreviousSpeed by remember { mutableStateOf(1.0f) }
+    var tapTimeoutJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    /** Executes classified gesture actions — the ONLY path from touch to player actions. */
+    fun executeGestureEvents(events: List<com.puretube.app.domain.GestureClassifier.Event>) {
+        for (event in events) {
+            when (event.action) {
+                com.puretube.app.domain.GestureClassifier.Action.TAP ->
+                    controlsVisible = !controlsVisible
+                com.puretube.app.domain.GestureClassifier.Action.DOUBLE_TAP -> {
+                    val activeController = controller ?: continue
+                    val seekMs = prefs.doubleTapSeekSeconds * 1000L
+                    runCatching {
+                        if (event.x < videoContainerSize.width / 2f) {
+                            activeController.seekTo(
+                                (activeController.currentPosition - seekMs).coerceAtLeast(0L)
+                            )
+                        } else {
+                            activeController.seekTo(
+                                (activeController.currentPosition + seekMs)
+                                    .coerceAtMost(maxOf(activeController.duration, 0L))
+                            )
+                        }
+                    }
+                }
+                com.puretube.app.domain.GestureClassifier.Action.HOLD_START -> {
+                    val marginPx = with(density) { 24.dp.toPx() }
+                    if (event.x < marginPx || event.x > videoContainerSize.width - marginPx) {
+                        continue
+                    }
+                    holdPreviousSpeed = controller?.playbackParameters?.speed ?: 1.0f
+                    runCatching { controller?.setPlaybackSpeed(2.0f) }
+                    holdingFastForward = true
+                }
+                com.puretube.app.domain.GestureClassifier.Action.HOLD_END -> {
+                    if (holdingFastForward) {
+                        runCatching { controller?.setPlaybackSpeed(holdPreviousSpeed) }
+                        holdingFastForward = false
+                    }
+                }
+                com.puretube.app.domain.GestureClassifier.Action.DRAG_START -> {
+                    val fraction = if (videoContainerSize.width > 0) {
+                        event.x / videoContainerSize.width
+                    } else {
+                        0.5f
+                    }
+                    dragZone = PlayerGesturePolicy.swipeZone(
+                        fraction, prefs.swipeBrightnessVolumeControls
+                    )
+                    dragIsMinimize = PlayerGesturePolicy.isMinimizeDragStart(
+                        fraction, prefs.swipeBrightnessVolumeControls
+                    )
+                    lastDragDy = 0f
+                    if (dragZone == -1 && brightnessFraction == null) {
+                        val attr = (context as? Activity)?.window?.attributes
+                        brightnessFraction =
+                            attr?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f
+                    }
+                }
+                com.puretube.app.domain.GestureClassifier.Action.DRAG_DELTA -> {
+                    val delta = event.dragDy - lastDragDy
+                    lastDragDy = event.dragDy
+                    when (dragZone) {
+                        -1 -> {
+                            val next = SwipeControlMath.applyDrag(
+                                brightnessFraction ?: 0.5f, delta,
+                                videoContainerSize.height.toFloat()
+                            )
+                            brightnessFraction = next
+                            runCatching {
+                                val activity = context as? Activity
+                                val attrs = activity?.window?.attributes
+                                if (activity != null && attrs != null) {
+                                    attrs.screenBrightness = next
+                                    activity.window.attributes = attrs
+                                }
+                            }
+                            swipeIndicator = "Brightness ${(next * 100).toInt()}%"
+                        }
+                        1 -> {
+                            val am = audioManager
+                            if (am != null) {
+                                val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+                                val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                val fraction = if (max > 0) current.toFloat() / max else 0f
+                                val nextFraction = SwipeControlMath.applyDrag(
+                                    fraction, delta, videoContainerSize.height.toFloat()
+                                )
+                                val nextVolume =
+                                    SwipeControlMath.fractionToVolume(nextFraction, max)
+                                runCatching {
+                                    am.setStreamVolume(AudioManager.STREAM_MUSIC, nextVolume, 0)
+                                }
+                                deviceVolume = nextVolume
+                                swipeIndicator = "Volume ${(nextFraction * 100).toInt()}%"
+                            }
+                        }
+                        else -> {
+                            if (dragIsMinimize) {
+                                dragActive = true
+                                liveDragOffsetPx = event.dragDy.coerceAtLeast(0f)
+                            }
+                        }
+                    }
+                }
+                com.puretube.app.domain.GestureClassifier.Action.DRAG_END -> {
+                    if (dragIsMinimize &&
+                        lastDragDy > with(density) { 120.dp.toPx() }
+                    ) {
+                        onMinimize()
+                    }
+                    dragActive = false
+                    liveDragOffsetPx = 0f
+                    lastDragDy = 0f
+                    dragZone = 0
+                    dragIsMinimize = false
+                }
+            }
+        }
+    }
 
     val resolvedState = rememberUpdatedState(resolved)
     val dislikeText = dislikeStats?.let {
@@ -847,143 +977,74 @@ fun VideoPlayerScreen(
                         .padding(16.dp)
                 )
             }
-            // Gesture layer: tap / double-tap / hold in one pointerInput,
-            // vertical swipe controls in a second pointerInput on the SAME
-            // box (Compose gesture composition — the drag detector only
-            // consumes once a real vertical drag starts, taps still land).
+            // Gesture layer (v2.1): ONE classifier owns every pointer
+            // event on the video. The v2.0 layout ran detectTapGestures
+            // and detectVerticalDragGestures as independent layers, so a
+            // vertical volume/brightness drag ALSO counted as a press
+            // (hold -> 2x speed) and pairs of drags counted as double
+            // taps (+/-10s seeks) — Bara's "volume changes jump the video
+            // around" bug. GestureClassifier arbitrates: first
+            // classification wins; a drag permanently cancels tap,
+            // double-tap and hold for that gesture.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(Unit) {
-                        val marginPx = 24.dp.toPx()
-                        detectTapGestures(
-                            onTap = { controlsVisible = !controlsVisible },
-                            onPress = { offset ->
-                                if (offset.x < marginPx || offset.x > size.width - marginPx) {
-                                    tryAwaitRelease()
-                                    return@detectTapGestures
+                    .pointerInput(controller, prefs.swipeBrightnessVolumeControls, prefs.doubleTapSeekSeconds) {
+                        val classifier = gestureClassifier
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            executeGestureEvents(
+                                classifier.onDown(down.position.x, down.position.y, down.uptimeMillis)
+                            )
+                            var up = false
+                            while (!up) {
+                                val pointerEvent = withTimeoutOrNull(40L) { awaitPointerEvent() }
+                                if (pointerEvent == null) {
+                                    executeGestureEvents(
+                                        classifier.onTick(android.os.SystemClock.uptimeMillis())
+                                    )
+                                    continue
                                 }
-                                val previousSpeed = controller?.playbackParameters?.speed ?: 1.0f
-                                val holdJob = scope.launch {
-                                    delay(220L)
-                                    runCatching { controller?.setPlaybackSpeed(2.0f) }
-                                    holdingFastForward = true
-                                }
-                                tryAwaitRelease()
-                                holdJob.cancel()
-                                if (holdingFastForward) {
-                                    runCatching { controller?.setPlaybackSpeed(previousSpeed) }
-                                    holdingFastForward = false
-                                }
-                            },
-                            onDoubleTap = { offset ->
-                                val activeController = controller ?: return@detectTapGestures
-                                val seekMs = prefs.doubleTapSeekSeconds * 1000L
-                                runCatching {
-                                    if (offset.x < size.width / 2f) {
-                                        activeController.seekTo(
-                                            (activeController.currentPosition - seekMs).coerceAtLeast(0L)
-                                        )
-                                    } else {
-                                        activeController.seekTo(
-                                            (activeController.currentPosition + seekMs)
-                                                .coerceAtMost(maxOf(activeController.duration, 0L))
-                                        )
-                                    }
-                                }
-                            }
-                        )
-                    }
-                    .pointerInput(prefs.swipeBrightnessVolumeControls) {
-                        // v1.5 gesture policy: brightness/volume swipes are
-                        // OPT-IN (default OFF). OFF: any vertical drag on
-                        // the video is the minimize drag (video follows the
-                        // finger; release past ~120 dp minimizes, otherwise
-                        // it springs back). ON: LEFT third = brightness,
-                        // RIGHT third = volume, CENTRE third = minimize drag.
-                        val swipeOn = prefs.swipeBrightnessVolumeControls
-                        var zone = 0 // -1 brightness, +1 volume, 0 none
-                        var minimizeCandidate = false
-                        var totalDrag = 0f
-                        val minimizeThreshold = 120.dp.toPx()
-                        detectVerticalDragGestures(
-                            onDragStart = { offset ->
-                                val fraction =
-                                    if (size.width > 0) offset.x / size.width else 0.5f
-                                zone = PlayerGesturePolicy.swipeZone(fraction, swipeOn)
-                                minimizeCandidate =
-                                    PlayerGesturePolicy.isMinimizeDragStart(fraction, swipeOn)
-                                totalDrag = 0f
-                                if (zone == -1 && brightnessFraction == null) {
-                                    val attr = (context as? Activity)?.window?.attributes
-                                    brightnessFraction =
-                                        attr?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f
-                                }
-                            },
-                            onVerticalDrag = { change, dragAmount ->
-                                when (zone) {
-                                    -1 -> {
-                                        val next = SwipeControlMath.applyDrag(
-                                            brightnessFraction ?: 0.5f, dragAmount, size.height.toFloat()
-                                        )
-                                        brightnessFraction = next
-                                        runCatching {
-                                            val activity = context as? Activity
-                                            val attrs = activity?.window?.attributes
-                                            if (activity != null && attrs != null) {
-                                                attrs.screenBrightness = next
-                                                activity.window.attributes = attrs
+                                val change = pointerEvent.changes
+                                    .firstOrNull { it.id == down.id } ?: continue
+                                when {
+                                    change.changedToUpOrCanceled() -> {
+                                        up = true
+                                        executeGestureEvents(
+                                            if (change.isCanceled) {
+                                                classifier.onCancel()
+                                            } else {
+                                                classifier.onUp(change.uptimeMillis)
                                             }
-                                        }
-                                        swipeIndicator = "Brightness ${(next * 100).toInt()}%"
+                                        )
                                     }
-                                    1 -> {
-                                        val am = audioManager
-                                        if (am != null) {
-                                            val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                                            val current = am.getStreamVolume(AudioManager.STREAM_MUSIC)
-                                            val fraction =
-                                                if (max > 0) current.toFloat() / max else 0f
-                                            val nextFraction = SwipeControlMath.applyDrag(
-                                                fraction, dragAmount, size.height.toFloat()
+                                    change.positionChanged() -> {
+                                        executeGestureEvents(
+                                            classifier.onMove(
+                                                change.position.x,
+                                                change.position.y,
+                                                change.uptimeMillis
                                             )
-                                            val nextVolume =
-                                                SwipeControlMath.fractionToVolume(nextFraction, max)
-                                            runCatching {
-                                                am.setStreamVolume(AudioManager.STREAM_MUSIC, nextVolume, 0)
-                                            }
-                                            deviceVolume = nextVolume
-                                            swipeIndicator = "Volume ${(nextFraction * 100).toInt()}%"
-                                        }
-                                    }
-                                    else -> {
-                                        if (minimizeCandidate) {
-                                            change.consume()
-                                            totalDrag += dragAmount
-                                            dragActive = true
-                                            liveDragOffsetPx = totalDrag.coerceAtLeast(0f)
-                                        }
+                                        )
+                                        if (dragActive || dragZone != 0) change.consume()
                                     }
                                 }
-                            },
-                            onDragEnd = {
-                                if (minimizeCandidate && totalDrag > minimizeThreshold) {
-                                    onMinimize()
-                                }
-                                dragActive = false
-                                liveDragOffsetPx = 0f
-                                totalDrag = 0f
-                                zone = 0
-                                minimizeCandidate = false
-                            },
-                            onDragCancel = {
-                                dragActive = false
-                                liveDragOffsetPx = 0f
-                                totalDrag = 0f
-                                zone = 0
-                                minimizeCandidate = false
                             }
-                        )
+                            if (classifier.isAwaitingSecondTap()) {
+                                tapTimeoutJob?.cancel()
+                                tapTimeoutJob = scope.launch {
+                                    delay(
+                                        com.puretube.app.domain.GestureClassifier
+                                            .DOUBLE_TAP_TIMEOUT_MS + 40L
+                                    )
+                                    executeGestureEvents(
+                                        classifier.onTimeout(
+                                            android.os.SystemClock.uptimeMillis()
+                                        )
+                                    )
+                                }
+                            }
+                        }
                     }
             )
             if (controlsVisible && controller != null) {

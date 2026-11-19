@@ -299,6 +299,14 @@ class PlayerController {
         runCatching { player?.pause() }
     }
 
+    /** v2.1: resume after a volume-zero rule pause (option-gated by the monitor). */
+    fun resumePlayback() {
+        val p = player ?: return
+        if (!p.isPlaying && !stoppedByRule) {
+            runCatching { p.play() }
+        }
+    }
+
     fun seekBy(deltaMs: Long) {
         val p = player ?: return
         val target = (p.currentPosition + deltaMs).coerceIn(0, maxOf(p.duration, 0L))

@@ -157,6 +157,9 @@ class GestureClassifier {
         holdFired = false
     }
 
+    /** True while a clean first tap is waiting out the double-tap window. */
+    fun isAwaitingSecondTap(): Boolean = phase == Phase.AWAITING_SECOND
+
     private fun beyondSlop(x: Float, y: Float): Boolean =
         abs(x - downX) > TOUCH_SLOP_PX || abs(y - downY) > TOUCH_SLOP_PX
 

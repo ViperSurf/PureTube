@@ -17,12 +17,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Volume-zero rule (v2.0, Bara's spec): when the device STREAM_MUSIC
- * volume reaches 0 while a video is playing, playback PAUSES. If the
- * volume stays at 0 continuously for the configured delay, playback
- * STOPS entirely (position is persisted first by the owner). When the
- * volume rises again, playback NEVER auto-resumes — restarting is
- * always manual, via the player's Play button.
+ * Volume-zero rule (v2.0, reworked v2.1): when the device STREAM_MUSIC
+ * volume reaches 0 while a video is playing, the configured action
+ * fires — PAUSE only (default), a 5/10/15s REWIND, or REWIND + PAUSE.
+ * If the volume stays at 0 continuously for the configured delay,
+ * playback STOPS entirely (position is persisted first by the owner).
+ * When the volume rises again, playback resumes ONLY when the user has
+ * enabled "Resume when volume returns" AND this rule did the pausing —
+ * the default remains Bara's original rule: never auto-resume.
  *
  * The decision logic is the pure [VolumeZeroRule] state machine; this
  * class only observes the volume (ContentObserver for immediacy + a
@@ -42,6 +44,10 @@ class VolumeZeroMonitor(
         fun pause()
         /** Persist the position, then stop the player. */
         fun stopPlayback()
+        /** v2.1: seek backwards by [ms] (volume-zero rewind actions). */
+        fun seekBack(ms: Long)
+        /** v2.1: resume after a rule pause (only when the option is on). */
+        fun resume()
     }
 
     /** One-line in-player notice ("Paused — volume is zero" / "Stopped — volume stayed zero"). */
@@ -97,6 +103,7 @@ class VolumeZeroMonitor(
             am?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: -1
         }.getOrDefault(-1)
         if (volume < 0) return
+        val previousPhase = ruleState.phase
         val (next, action) = VolumeZeroRule.onSample(
             state = ruleState,
             volumeIsZero = volume == 0,
@@ -104,7 +111,9 @@ class VolumeZeroMonitor(
             hasMedia = runCatching { callbacks.hasMedia() }.getOrDefault(false),
             enabled = prefs.pauseOnVolumeZero,
             stopDelayMs = prefs.volumeZeroStopSeconds.toLong() * 1000L,
-            nowMs = System.currentTimeMillis()
+            nowMs = System.currentTimeMillis(),
+            zeroAction = prefs.volumeZeroAction,
+            resumeOnReturn = prefs.resumeOnVolumeReturn
         )
         ruleState = next
         when (action) {
@@ -112,11 +121,34 @@ class VolumeZeroMonitor(
                 runCatching { callbacks.pause() }
                 _notice.value = "Paused — volume is zero"
             }
+            VolumeZeroRule.Action.REWIND -> {
+                val ms = next.lastRewindMs
+                runCatching { callbacks.seekBack(ms) }
+                _notice.value = "Rewound ${ms / 1000}s — volume is zero"
+            }
+            VolumeZeroRule.Action.REWIND_AND_PAUSE -> {
+                val ms = next.lastRewindMs
+                runCatching { callbacks.seekBack(ms) }
+                runCatching { callbacks.pause() }
+                _notice.value = "Rewound ${ms / 1000}s & paused — volume is zero"
+            }
             VolumeZeroRule.Action.STOP -> {
                 runCatching { callbacks.stopPlayback() }
                 _notice.value = "Stopped — volume stayed zero"
             }
-            VolumeZeroRule.Action.NONE -> Unit
+            VolumeZeroRule.Action.RESUME -> {
+                runCatching { callbacks.resume() }
+                _notice.value = null
+            }
+            VolumeZeroRule.Action.NONE -> {
+                // Volume returned while we were only pending (no stop, no
+                // resume): the "paused/rewound" note no longer applies.
+                if (volume > 0 && previousPhase == VolumeZeroRule.Phase.ZERO_PENDING_STOP &&
+                    next.phase == VolumeZeroRule.Phase.INACTIVE
+                ) {
+                    _notice.value = null
+                }
+            }
         }
     }
 }

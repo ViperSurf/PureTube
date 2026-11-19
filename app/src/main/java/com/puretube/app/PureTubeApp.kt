@@ -139,6 +139,8 @@ class PureTubeApp : Application() {
                 override fun currentMediaId(): String? =
                     playerController.state.value.currentVideoId.takeIf { it.isNotBlank() }
                 override fun pause() = playerController.pause()
+                override fun seekBack(ms: Long) = playerController.seekBy(-ms)
+                override fun resume() = playerController.resumePlayback()
                 override fun stopPlayback() {
                     // Persist the position first, then stop (Bara's rule).
                     val servicePlayer = PlaybackService.instance?.player
