@@ -37,6 +37,9 @@ enum class LikesDisplay { NUMBERS, PERCENTAGE, BOTH }
 /** HaramBlur region scope (v1.5): tight face/head box, or an approximated person region. */
 enum class BlurScope { FACE_ONLY, FACE_AND_BODY }
 
+/** Player aspect mode (v2.0): FIT letterboxes, ZOOM centre-crops to fill, STRETCH distorts to fill. */
+enum class VideoAspectMode { FIT, ZOOM, STRETCH }
+
 /** App language; SYSTEM follows the phone. Applies on restart. */
 enum class AppLanguage(val code: String) {
     SYSTEM("SYSTEM"), ENGLISH("en"), ARABIC("ar"), SPANISH("es"),
@@ -103,6 +106,12 @@ data class AppPreferencesState(
     /** v1.5: left/right vertical-drag brightness/volume on the video. OFF by default —
      *  drag down/up on the video is minimize/maximize instead. */
     val swipeBrightnessVolumeControls: Boolean = false,
+    /** v2.0: pause playback when the device media volume reaches zero. */
+    val pauseOnVolumeZero: Boolean = true,
+    /** v2.0: if volume stays zero this many seconds, stop playback. 0 = never stop. */
+    val volumeZeroStopSeconds: Int = 30,
+    /** v2.0: how the video picture fits its container. FIT is the undistorted default. */
+    val videoAspectMode: VideoAspectMode = VideoAspectMode.FIT,
     // Section 3: Focus, Shorts & Feed Filters
     val stripShortsEverywhere: Boolean = true,
     val defaultStartTab: DefaultStartTab = DefaultStartTab.SUBSCRIPTIONS,
@@ -161,6 +170,9 @@ class AppPreferences(private val context: Context) {
         val blurVisualStyle = stringPreferencesKey("blur_visual_style")
         val blurScope = stringPreferencesKey("blur_scope")
         val swipeBrightnessVolume = booleanPreferencesKey("swipe_brightness_volume")
+        val pauseOnVolumeZero = booleanPreferencesKey("pause_on_volume_zero")
+        val volumeZeroStopSeconds = intPreferencesKey("volume_zero_stop_seconds")
+        val videoAspectMode = stringPreferencesKey("video_aspect_mode")
         val detectionSensitivity = floatPreferencesKey("detection_sensitivity")
         val blurIntensityRadius = floatPreferencesKey("blur_intensity_radius")
         val zeroFlashSafePreBlur = booleanPreferencesKey("zero_flash_safe_pre_blur")
@@ -276,6 +288,9 @@ class AppPreferences(private val context: Context) {
             unmuteRaisesVolume = this[Keys.unmuteRaisesVolume] ?: d.unmuteRaisesVolume,
             keepVideoPinnedWhileScrolling = this[Keys.keepVideoPinned] ?: d.keepVideoPinnedWhileScrolling,
             swipeBrightnessVolumeControls = this[Keys.swipeBrightnessVolume] ?: d.swipeBrightnessVolumeControls,
+            pauseOnVolumeZero = this[Keys.pauseOnVolumeZero] ?: d.pauseOnVolumeZero,
+            volumeZeroStopSeconds = this[Keys.volumeZeroStopSeconds] ?: d.volumeZeroStopSeconds,
+            videoAspectMode = enumOr(Keys.videoAspectMode, VideoAspectMode.entries.toTypedArray(), d.videoAspectMode),
             doubleTapSearchResets = this[Keys.doubleTapSearchResets] ?: d.doubleTapSearchResets,
             likesDisplay = enumOr(Keys.likesDisplay, LikesDisplay.entries.toTypedArray(), d.likesDisplay),
             stripShortsEverywhere = this[Keys.stripShortsEverywhere] ?: d.stripShortsEverywhere,
@@ -323,6 +338,9 @@ class AppPreferences(private val context: Context) {
         this[Keys.blurVisualStyle] = next.blurVisualStyle.name
         this[Keys.blurScope] = next.blurScope.name
         this[Keys.swipeBrightnessVolume] = next.swipeBrightnessVolumeControls
+        this[Keys.pauseOnVolumeZero] = next.pauseOnVolumeZero
+        this[Keys.volumeZeroStopSeconds] = next.volumeZeroStopSeconds
+        this[Keys.videoAspectMode] = next.videoAspectMode.name
         this[Keys.detectionSensitivity] = next.detectionSensitivity
         this[Keys.blurIntensityRadius] = next.blurIntensityRadius
         this[Keys.zeroFlashSafePreBlur] = next.zeroFlashSafePreBlur

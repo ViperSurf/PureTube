@@ -61,7 +61,10 @@ object SectionResets {
                 autoRotatePlayer = d.autoRotatePlayer,
                 unmuteRaisesVolume = d.unmuteRaisesVolume,
                 keepVideoPinnedWhileScrolling = d.keepVideoPinnedWhileScrolling,
-                swipeBrightnessVolumeControls = d.swipeBrightnessVolumeControls
+                swipeBrightnessVolumeControls = d.swipeBrightnessVolumeControls,
+                pauseOnVolumeZero = d.pauseOnVolumeZero,
+                volumeZeroStopSeconds = d.volumeZeroStopSeconds,
+                videoAspectMode = d.videoAspectMode
             )
             SECTION_3 -> state.copy(
                 stripShortsEverywhere = d.stripShortsEverywhere,

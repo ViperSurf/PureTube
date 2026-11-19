@@ -29,6 +29,9 @@ data class PlayerUiState(
     val currentVideoId: String = "",
     /** Last player error message, or null. Surfaced in-player, never thrown. */
     val playerError: String? = null,
+    /** v2.0: decoded video size (0 = unknown) — drives aspect modes + blur mapping. */
+    val videoWidth: Int = 0,
+    val videoHeight: Int = 0,
     val sleepTimerMinutes: Int = 0,
     val sleepTimerExpired: Boolean = false
 )
@@ -94,6 +97,7 @@ class PlayerController {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            stoppedByRule = false
             _state.value = _state.value.copy(
                 title = mediaItem?.mediaMetadata?.title?.toString().orEmpty(),
                 currentVideoId = mediaItem?.mediaId.orEmpty(),
@@ -114,6 +118,13 @@ class PlayerController {
             if (playbackState == Player.STATE_ENDED) {
                 runCatching { onPlaybackEnded?.invoke() }
             }
+        }
+
+        override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+            _state.value = _state.value.copy(
+                videoWidth = videoSize.width,
+                videoHeight = videoSize.height
+            )
         }
     }
 
@@ -251,9 +262,37 @@ class PlayerController {
         _state.value = _state.value.copy(sleepTimerExpired = false)
     }
 
+    /** v2.0: true after [stopPlayback] until the user restarts playback manually. */
+    @Volatile
+    var stoppedByRule: Boolean = false
+        private set
+
     fun togglePlayPause() {
         val p = player ?: return
-        if (p.isPlaying) p.pause() else p.play()
+        if (p.isPlaying) {
+            p.pause()
+        } else if (stoppedByRule) {
+            // A stopped player must be re-prepared before play() does anything.
+            stoppedByRule = false
+            runCatching {
+                p.prepare()
+                p.play()
+            }
+        } else {
+            p.play()
+        }
+    }
+
+    /**
+     * v2.0 volume-zero rule: full stop (not pause). The current position
+     * is the caller's to persist first; the player keeps its media item
+     * so the in-player Play button can re-prepare and restart manually.
+     */
+    fun stopPlayback() {
+        val p = player ?: return
+        stoppedByRule = true
+        runCatching { p.stop() }
+        _state.value = _state.value.copy(isPlaying = false)
     }
 
     fun pause() {

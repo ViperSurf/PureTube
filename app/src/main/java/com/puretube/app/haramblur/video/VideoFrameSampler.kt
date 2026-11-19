@@ -31,7 +31,15 @@ data class SamplerDiagnostics(
     /** v1.5: which detection pass produced the last faces — "full", "tiled", "upscale", "none". */
     val lastPassType: String = "none",
     /** v1.5: cumulative regions detected since sampling started. */
-    val totalDetections: Long = 0L
+    val totalDetections: Long = 0L,
+    /** v2.0: is the sampling loop alive right now. */
+    val samplerRunning: Boolean = false,
+    /** v2.0: pixel size of the TextureView surface being sampled (0 = none yet). */
+    val surfaceWidth: Int = 0,
+    val surfaceHeight: Int = 0,
+    /** v2.0: regions the overlay actually drew on its last pass — separates
+     *  "not detecting" from "detecting but not drawing". */
+    val overlayRegionsDrawn: Int = 0
 )
 
 /**
@@ -77,6 +85,28 @@ class VideoFrameSampler(
         Bitmap.createBitmap(640, 360, Bitmap.Config.ARGB_8888)
     }.getOrNull()
 
+    /**
+     * v2.0: low-resolution copy of the latest sampled frame (128x72).
+     * The overlay upscales regions of THIS bitmap with filtering off to
+     * draw REAL pixelated patches of the actual video frame — the old
+     * overlay only ever drew flat translucent boxes, which is a large
+     * part of why in-video blur "did nothing" visually. Mutated in
+     * place; [frameVersion] is the recomposition/redraw signal.
+     */
+    private val pixelBufferBitmap: Bitmap? = runCatching {
+        Bitmap.createBitmap(PIXEL_FRAME_WIDTH, PIXEL_FRAME_HEIGHT, Bitmap.Config.ARGB_8888)
+    }.getOrNull()
+    private val pixelCanvas: android.graphics.Canvas? =
+        pixelBufferBitmap?.let { android.graphics.Canvas(it) }
+    private val pixelPaint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+
+    @Volatile
+    var pixelFrame: Bitmap? = null
+        private set
+
+    private val _frameVersion = MutableStateFlow(0L)
+    val frameVersion: StateFlow<Long> = _frameVersion
+
     /** Consecutive full-frame passes that found nothing (drives the tiled cadence). */
     @Volatile private var consecutiveEmptyFullPasses: Int = 0
     private val tracker = BoundingBoxTracker(holdMs = 450L, alpha = 0.65f)
@@ -109,6 +139,13 @@ class VideoFrameSampler(
         if (released) return
         runCatching { tracker.reset() }
         _isInitialFrameCleared.value = false
+        publishDiagnostics {
+            it.copy(
+                samplerRunning = true,
+                surfaceWidth = runCatching { textureView.width }.getOrDefault(0),
+                surfaceHeight = runCatching { textureView.height }.getOrDefault(0)
+            )
+        }
         samplingJob = scope.launch(Dispatchers.Default) {
             while (isActive) {
                 runCatching {
@@ -149,6 +186,21 @@ class VideoFrameSampler(
                         val buffer = sampleBufferBitmap
                         val copied = if (buffer != null) copyFrame(textureView, buffer) else false
                         if (copied && buffer != null) {
+                            // Publish the low-res pixel frame for the
+                            // overlay's real pixelated patches.
+                            runCatching {
+                                val pb = pixelBufferBitmap
+                                val pc = pixelCanvas
+                                if (pb != null && pc != null) {
+                                    pc.drawBitmap(
+                                        buffer, null,
+                                        android.graphics.Rect(0, 0, pb.width, pb.height),
+                                        pixelPaint
+                                    )
+                                    pixelFrame = pb
+                                    _frameVersion.value = _frameVersion.value + 1
+                                }
+                            }
                             val brightness = meanBrightness(buffer)
                             // Tiled pass cadence: only after 2 consecutive
                             // empty full-frame passes (about every 3rd sample).
@@ -209,6 +261,16 @@ class VideoFrameSampler(
     fun stopSampling() {
         samplingJob?.cancel()
         samplingJob = null
+        if (_diagnostics.value.samplerRunning) {
+            publishDiagnostics { it.copy(samplerRunning = false) }
+        }
+    }
+
+    /** v2.0: the overlay reports how many regions it actually drew. */
+    fun noteOverlayRegionsDrawn(count: Int) {
+        if (_diagnostics.value.overlayRegionsDrawn != count) {
+            publishDiagnostics { it.copy(overlayRegionsDrawn = count) }
+        }
     }
 
     fun release() {
@@ -230,6 +292,12 @@ class VideoFrameSampler(
             }
             false
         }
+
+    companion object {
+        /** Pixel-frame size: small enough that upscaling it is visibly blocky. */
+        const val PIXEL_FRAME_WIDTH = 128
+        const val PIXEL_FRAME_HEIGHT = 72
+    }
 
     /** Mean brightness 0-255 over a strided pixel sample of the buffer. */
     private fun meanBrightness(bitmap: Bitmap): Int = runCatching {
