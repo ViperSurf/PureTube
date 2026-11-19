@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.0.0 — 2026-11-18
+
+YouTube account sign-in (like/dislike/subscribe/comment/sync), the volume-zero rule, immersive fullscreen with aspect modes, whole-page drag, and the in-video HaramBlur audit fix.
+
+### YouTube account (optional, off by default)
+- **Sign-in, two routes** (Settings → Account): (a) paste your YouTube **Cookie header** (must include SAPISID) — validated against YouTube's account endpoint, showing your channel name + avatar, before anything is stored; (b) an **experimental** in-app WebView Google sign-in that captures the cookies from youtube.com afterwards (Google blocks embedded sign-in for some accounts).
+- **Storage/security:** cookies live **only** in Android Keystore-backed encrypted storage (EncryptedSharedPreferences, AES256-GCM) — never in Room/DataStore plaintext, never in settings export/import, never logged. Sign out wipes them. No Google password is ever collected.
+- **Real actions when signed in:** player **Like / Dislike** (optimistic, rolled back on failure; signed-out taps route to sign-in), **Subscribe** in the player and on channel pages (YouTube's state wins, local follows), and **comment posting** from the box at the top of comments (signed-out shows "Sign in to comment").
+- **Up Next / Related** row under the player: extractor related streams normally; the authenticated watch-next when signed in.
+- **Sync now** (pull-only): account playlists mirrored locally and marked "YouTube • synced", watch history merged (local resume positions win), subscriptions merged, Liked videos as a local playlist. Local changes never push back except the direct actions. Auth failures surface as "Session expired — sign in again".
+- Room migration 2→3 (synced-playlist marker column). All signed-out behaviour is unchanged.
+
+### Volume-zero rule
+- Media volume reaching **0** while a video plays → **pause**. Still 0 after the delay (15 s / **30 s** / 1 min / 5 min / Never) → **stop** (position saved first; big Play restarts manually). Volume rising cancels the stop timer but **never auto-resumes**. Settings: "Pause When Volume Hits Zero" (on) and "Stop If Volume Stays Zero". The player shows an in-place notice when the rule fires.
+
+### Fullscreen
+- **Immersive:** landscape fullscreen hides the status bar and nav bar (transient-by-swipe), restored on exit.
+- **No more overlap:** the fullscreen controls are separate bands — title/author top-left, centre play, chips row above, **seek slider pinned to the very bottom edge**.
+- **Aspect modes:** Fit (default, letterboxed, never stretched) / Zoom (centre-crop fill) / Stretch (distort fill), via the new **Aspect** state chip and a Playback setting. The blur overlay follows the active mode's displayed rect.
+
+### Drag
+- The minimize drag now translates the **entire player page as one unit** (video, title, chips, description and comments move together) instead of the video sliding over/under the rest.
+
+### In-video HaramBlur — audit fix
+- **What was actually wrong:** (1) the overlay never drew the real frame — every style was a flat translucent dark box, nearly invisible on dark scenes; (2) regions were mapped against the container on the assumption the picture filled it (the picture was in fact stretched to fill, with no aspect handling anywhere). Detection itself, the tracker, and the sampler lifecycle checked out.
+- **Fix:** the sampler publishes a 128×72 pixel copy of each frame; the overlay draws **real pixelated patches** of it (mosaic / frosted; solid curtain unchanged). The TextureView is laid out at the exact **displayed-video rect** for the active aspect mode, and regions map through that rect (unit-tested for FIT incl. letterbox, ZOOM, STRETCH).
+- **Diagnostics++** (Settings → HaramBlur status): sampler running, surface size, video size, last detections, and **regions drawn by the overlay** — "not detecting" vs "detecting but not drawing" is now distinguishable from one screen.
+
 ## v1.5.0 — 2026-11-18
 
 PiP fixes, gesture rework, floating-window redesign, HaramBlur round 3.
