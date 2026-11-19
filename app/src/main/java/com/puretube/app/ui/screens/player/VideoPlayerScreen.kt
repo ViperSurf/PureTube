@@ -316,35 +316,6 @@ fun VideoPlayerScreen(
             }
         }
     }
-    // v2.0 related / up next: extractor related first; when signed in the
-    // authenticated watch-next wins when it returns anything.
-    LaunchedEffect(resolved, account.signedIn) {
-        val stream = resolved ?: return@LaunchedEffect
-        relatedExpanded = !prefs.collapseRelatedByDefault
-        var items = stream.related
-        if (account.signedIn) {
-            app.innertubeClient.nextRelated(videoId)
-                .onSuccess { parsed ->
-                    if (parsed.isNotEmpty()) {
-                        items = parsed.map { p ->
-                            FeedItem(
-                                videoId = p.videoId,
-                                title = p.title,
-                                channelName = p.channelName,
-                                channelId = p.channelId,
-                                thumbnailUrl = p.thumbnailUrl,
-                                durationSeconds = p.durationSeconds,
-                                url = "https://www.youtube.com/watch?v=${p.videoId}"
-                            )
-                        }
-                    }
-                }
-        }
-        if (items.isEmpty()) {
-            items = app.streamRepository.fetchRelated(videoId).getOrDefault(emptyList())
-        }
-        related = items
-    }
     LaunchedEffect(swipeIndicator) {
         if (swipeIndicator != null) {
             delay(900L)
@@ -678,6 +649,36 @@ fun VideoPlayerScreen(
                 }
             )
         }
+    }
+
+    // v2.0 related / up next: extractor related first; when signed in the
+    // authenticated watch-next wins when it returns anything.
+    LaunchedEffect(resolved, account.signedIn) {
+        val stream = resolved ?: return@LaunchedEffect
+        relatedExpanded = !prefs.collapseRelatedByDefault
+        var items = stream.related
+        if (account.signedIn) {
+            app.innertubeClient.nextRelated(videoId)
+                .onSuccess { parsed ->
+                    if (parsed.isNotEmpty()) {
+                        items = parsed.map { p ->
+                            FeedItem(
+                                videoId = p.videoId,
+                                title = p.title,
+                                channelName = p.channelName,
+                                channelId = p.channelId,
+                                thumbnailUrl = p.thumbnailUrl,
+                                durationSeconds = p.durationSeconds,
+                                url = "https://www.youtube.com/watch?v=${p.videoId}"
+                            )
+                        }
+                    }
+                }
+        }
+        if (items.isEmpty()) {
+            items = app.streamRepository.fetchRelated(videoId).getOrDefault(emptyList())
+        }
+        related = items
     }
 
     fun copyDiagnostics() {
