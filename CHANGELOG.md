@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.4.0 — 2026-11-18
+
+In-video HaramBlur fix, player UX, rich descriptions, comment replies.
+
+### In-video HaramBlur — the headline fix
+- Root cause of live-video blur never firing: the sampler captured frames with `PixelCopy.request(SurfaceView, …)` against the player's SurfaceView; on real devices that path routinely failed (or returned black), and the sampler's defensive design swallowed every failure silently — thumbnails blurred, live video never did.
+- The player now renders into a **TextureView** (`MediaController.setVideoTextureView`, cleared on release; PlayerView is gone from the full player), and the sampler copies frames with **TextureView.getBitmap()** into the same 320×180 buffer at ~12 FPS on its own thread — no PixelCopy anywhere. Same EMA tracker (alpha 0.65) and 450 ms hold, all failures still silent no-ops in the player.
+- **Sampler diagnostics** now exist so this can never fail invisibly again: Settings > HaramBlur status shows frames sampled, last frame mean brightness (0–255), last detection count, and the last sampler error. The same numbers ride along in the player's Copy diagnostics.
+- **Face box shrunk to face/head only:** expansion is now ~0.20 width each side, 0.25 top, 0.20 bottom (chin/neck, no body) — down from 0.45 / 0.40 / 0.85 hair-and-shoulders. Applies to live video and thumbnails.
+- The HaramBlur status text is **removed from the player**; status lives only in Settings.
+
+### Player UX
+- **Drag-down-to-minimize:** a visible drag-handle pill above the title — pull it down past ~120 dp to minimize. (Swipe-down on the video itself is intentionally not used: vertical drags there are brightness/volume.)
+- **Swipe controls:** vertical drag on the video's LEFT third adjusts window brightness, RIGHT third adjusts media volume, with a small centre-top % indicator while dragging. Full gesture map (tap = controls, double-tap = seek, hold = 2×, handle = minimize, sides = brightness/volume) is documented in the README.
+- **Controls visibility** setting: Auto-hide (3 s while playing) or Always visible.
+- **Rotate chip** next to Minimize: "Rotate: Auto" / "Rotate: Locked" — Auto lets the player rotate with the sensor (landscape included), Locked pins portrait; leaving the player restores the system default.
+- **PiP chip** now carries the Picture-in-Picture icon + "PiP" text, still immediately right of Sleep.
+- **Seek sliders in the mini players:** the dock and the floating mini window both show a live seek slider with position/duration and support scrubbing.
+- **Unmute raises volume** (on by default): unmuting while the device media volume is 0 raises it to ~40%; the sound chip shows a "Vol 0" hint in that state.
+
+### Likes + description
+- **Likes display** setting: Numbers, Percentage, or Both — the player's like/dislike line uses the Return YouTube Dislike counts with pure percentage math (hidden when counts are unknown).
+- **Formatted descriptions:** HTML is parsed into segments — line breaks and paragraphs become newlines, entities are decoded, runs of blank lines collapse to one, **links are tappable** (open in the browser), and **timestamps are tappable** (seek the player). Still collapsed by default and gated by the Description toggle.
+
+### Comments + sticky video
+- **Comment replies:** comments with replies get a "View replies (N)" expander that fetches them through the extractor's real replies API (`CommentsInfoItem.getReplies()` continuation Page → `CommentsInfo.getMoreItems(service, url, page)`), with the same comment filters applied; failures say "Replies unavailable for this comment."
+- **Sticky video** (on by default): the video + seek + chips stay pinned as a header while the title, actions, description and comments scroll underneath; turn it off for the old single-scroll page.
+
+### Search reset + channel exemptions
+- **Double-tap Search resets** (on by default): tapping the Search tab while already on Search clears the query, results, type filter and scroll.
+- **HaramBlur channel exemptions:** "Don't blur this channel" in the player's actions and on the channel screen — exempt channels are never blurred in thumbnails (Coil) or live video (sampler). Exemptions are listed with Remove buttons in Settings. Stored as a new blocklist filter type (TEXT column — no database migration, DB stays v2).
+
+### Tests
+- 88 JVM unit tests (was 69): DescriptionFormatter (tags, links, entities, timestamps, blank-line collapse), likes percentage + format modes, the new face-box padding, the exemption decision, controls/search-reset policies and swipe-control math.
+
 ## v1.3.0 — 2026-11-18
 
 Field-test fix release: search NPE, real HaramBlur, player controls, audio-only.
