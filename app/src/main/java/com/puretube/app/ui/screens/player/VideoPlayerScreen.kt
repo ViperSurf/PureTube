@@ -121,8 +121,10 @@ import com.puretube.app.playback.SleepTimerMapping
 import com.puretube.app.ui.components.AddToPlaylistDialog
 import com.puretube.app.ui.theme.PureAccent
 import com.puretube.app.ui.theme.PureTextSecondary
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class StreamKind { ADAPTIVE, PROGRESSIVE, AUDIO_ONLY }
 
@@ -1187,14 +1189,16 @@ fun VideoPlayerScreen(
                                 val change = pointerEvent.changes
                                     .firstOrNull { it.id == down.id } ?: continue
                                 when {
-                                    pointerEvent.type == PointerEventType.Cancel -> {
-                                        up = true
-                                        executeGestureEvents(classifier.onCancel())
-                                    }
                                     !change.pressed -> {
                                         up = true
                                         executeGestureEvents(
-                                            classifier.onUp(change.uptimeMillis)
+                                            if (pointerEvent.type ==
+                                                PointerEventType.Release
+                                            ) {
+                                                classifier.onUp(change.uptimeMillis)
+                                            } else {
+                                                classifier.onCancel()
+                                            }
                                         )
                                     }
                                     change.position != lastPosition -> {

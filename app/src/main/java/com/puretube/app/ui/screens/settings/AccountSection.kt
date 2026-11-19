@@ -100,12 +100,14 @@ fun AccountSectionBlock(app: PureTubeApp) {
                 deviceFlow = null
                 break
             }
-            val outcome = app.accountRepository.pollDeviceSignIn(flow)
-                .getOrElse { e ->
-                    status = e.message ?: "Sign-in check failed."
-                    deviceFlow = null
-                    break
-                }
+            val outcomeResult = app.accountRepository.pollDeviceSignIn(flow)
+            if (outcomeResult.isFailure) {
+                status = outcomeResult.exceptionOrNull()?.message
+                    ?: "Sign-in check failed."
+                deviceFlow = null
+                break
+            }
+            val outcome = outcomeResult.getOrThrow()
             when (outcome) {
                 is DevicePollResult.Pending ->
                     status = "Waiting for approval… enter the code at youtube.com/activate."
