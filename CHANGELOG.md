@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.3.0 — 2026-11-18
+
+Field-test fix release: search NPE, real HaramBlur, player controls, audio-only.
+
+### Search NPE — fixed
+- Searching a channel name under the Videos filter (e.g. "ssundee") or a term under Channels (e.g. "minecraft") failed with "NullPointerException: getOrDefault (.) must not be null". Cause: NewPipe 0.27.1 InfoItem getters are Java platform types annotated @Nonnull that return null at runtime for some typed-search item shapes; the mapping code assigned them straight into non-null Kotlin fields and used `runCatching { … }.getOrDefault(…)` patterns, so one null getter threw and failed the whole search. Now every getter is read into a nullable local first, mapping runs on raw nullable holders with defaults, and each item maps inside its own runCatching — a bad item is skipped, never fatal. Search failures show the exception class + top stack frames with a Copy diagnostics button; a genuinely empty result shows "No results".
+
+### HaramBlur — actually works now
+- The official MediaPipe BlazeFace short-range float16 model is bundled (229,746 B, SHA-256 b4578f35940bf5a1a655214a1cce5cab13eba73c1297cd78e1a04c2380b0152f). Its real tensors were verified (input [1,128,128,3]; regressors [1,896,16]; classifiers [1,896,1]) and the anchor decode was rewritten to the standard 896-anchor scheme (the old code used a wrong grid and swapped dx/dy); a host-side LiteRT run on the bundled test portrait lands a box on the face at ~0.84 confidence.
+- No gender model is bundled, so ALL detected faces are blurred regardless of Who-to-Blur, and the UI says so: the player pill and a new Settings HaramBlur status block show face-model loaded?, mode (All-faces fallback / Gender model), and the last load error. A Test detection button runs the engine on a bundled public-domain portrait and reports the region count.
+- The Coil thumbnail cache key carries a model-revision token so pre-v1.3 cached unblurred thumbnails are never served; BOTH rows and thumbnail cells now use the same protected thumbnail pipeline as full cards.
+
+### Player controls + reopen freeze
+- Reopening the video that is already loaded attaches instantly from a playback-session cache — no re-extraction, no setMediaItem — across full → dock → floating → full.
+- The PlayerView's own controller is disabled. A single tap toggles PureTube's controls (state chips + seek bar); they auto-hide after ~3 s while playing and always come back on tap. Double-tap seek and hold-to-2× remain.
+
+### Audio-only + toggle redesign
+- One row of state chips: Sound Unmuted/Muted (red), Media Video + Audio / Audio Only (red when on), Sleep Timer, PiP immediately right of Sleep, Speed (tap cycles, long-press opens the slider inline — the standalone Speed slider button is gone), ⌄ Minimize on the player.
+- Audio Only is single-source state re-applied on every attach: on, the picture is removed everywhere (placeholder + title + "Audio Only" label in the full player and floating window, label in the dock); off, the renderer is re-enabled and the surface re-binds in place.
+- New preferences: Launch Videos in Audio-Only (off by default), Comments (on), Description (on). The player gains a collapsed-by-default Description section; comments/description are never fetched or shown when their toggle is off.
+
+### Layout, floating window, PiP, home feed
+- The shared display controls (layout incl. Thumbnail-only/Title-only, thumbnail scale, grid columns) now appear on Home/Subscriptions, Library (incl. playlist detail), and Channel screens.
+- Floating mini window: S/M/L resize, explicit Expand, and Close now collapses to the dock with playback continuing.
+- System PiP hides the bottom navigation, dock, floating window and notices — the PiP window shows only the video.
+- Subscriptions All feed shows "Loading your feed…" with a spinner during the first load; "Nothing in the feed yet. Tap Refresh to load each channel's newest videos." appears only after a completed empty load.
+
+
 ## v1.2.0 — 2026-11-18
 
 Field-test fix release: playback failover, search, queue visibility, imports.
