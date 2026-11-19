@@ -13,8 +13,9 @@ class SectionResetsTest {
 
     @Test
     fun sectionsRenderInNumericOrder() {
+        // v2.1: section 8 (Captions) added after Diagnostics.
         assertEquals(
-            listOf("1", "2", "3", "4", "5", "6", "7"),
+            listOf("1", "2", "3", "4", "5", "6", "7", "8"),
             SectionResets.sectionsInOrder.map { it.substringBefore('.') }
         )
     }
