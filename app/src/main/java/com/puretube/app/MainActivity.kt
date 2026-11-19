@@ -478,7 +478,8 @@ private fun PureTubeNav(
                                 runCatching { controller?.seekTo(target) }
                             },
                             onQueueClick = { navController.navigate("queue") },
-                            onFloatClick = { floatingOpen = true },
+                            floatingVisible = floatingOpen,
+                            onToggleFloating = { floatingOpen = !floatingOpen },
                             onOpenPlayer = {
                                 val videoId = controller?.currentMediaItem?.mediaId
                                 if (!videoId.isNullOrBlank()) {
@@ -676,16 +677,13 @@ private fun PureTubeNav(
                 FloatingMiniWindow(
                     controller = controller,
                     state = playerState,
-                    onTogglePlayPause = { app.playerController.togglePlayPause() },
                     onExpand = {
                         floatingOpen = false
                         val videoId = controller?.currentMediaItem?.mediaId
                         if (!videoId.isNullOrBlank()) {
                             navController.navigate("player/$videoId") { launchSingleTop = true }
                         }
-                    },
-                    // v1.3: Close collapses to the dock; playback continues.
-                    onClose = { floatingOpen = false }
+                    }
                 )
             }
             if (prefs.nightOledDimmerAlpha > 0f) {

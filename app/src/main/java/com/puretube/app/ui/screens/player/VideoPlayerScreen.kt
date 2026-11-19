@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -45,6 +46,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -89,7 +91,9 @@ import com.puretube.app.domain.HaramBlurExemptions
 import com.puretube.app.domain.LikesDisplayMath
 import com.puretube.app.domain.PlayerControlsPolicy
 import com.puretube.app.domain.SponsorRewindSuppression
+import com.puretube.app.domain.PlayerGesturePolicy
 import com.puretube.app.domain.SwipeControlMath
+import kotlin.math.roundToInt
 import com.puretube.app.haramblur.video.VideoBlurMaskOverlay
 import com.puretube.app.haramblur.video.VideoFrameSampler
 import com.puretube.app.playback.CastRouterController
@@ -111,18 +115,21 @@ private enum class StreamKind { ADAPTIVE, PROGRESSIVE, AUDIO_ONLY }
  * HaramBlur sampler reads frames back with TextureView.getBitmap()
  * (PixelCopy on the old SurfaceView silently produced no frames).
  *
- * GESTURE MAP (video area, all coexisting):
+ * GESTURE MAP (video area, all coexisting; v1.5 rework):
  * - Single tap: toggle OUR controls (chips + seek).
  * - Double-tap left/right half: seek -/+ the configured seconds.
  * - Press-and-hold (>220 ms, away from the edges): 2x fast-forward.
- * - Vertical drag on the LEFT third: window brightness.
- * - Vertical drag on the RIGHT third: STREAM_MUSIC volume.
- *   (Both show a small centre-top % indicator while dragging. The centre
- *   third is left free so vertical drags there do nothing accidental.)
- * - Drag HANDLE PILL above the title, pulled down past ~120 dp: minimize.
- *   Swipe-down-to-minimize ON the video itself is deliberately NOT used:
- *   vertical drags on the video already mean brightness/volume, so the
- *   handle is the one unambiguous minimize gesture.
+ * - PRIMARY: vertical drag DOWN on the video — the video follows the
+ *   finger; release past ~120 dp minimizes to dock/floating, otherwise
+ *   it springs back. On the floating window / dock, drag UP expands.
+ * - Drag HANDLE PILL above the title, pulled down past ~120 dp: minimize
+ *   (secondary route, always available).
+ * - Brightness/volume swipes are OPT-IN (Settings → "Swipe
+ *   Brightness/Volume Controls", default OFF): when ON, the LEFT third
+ *   drags window brightness and the RIGHT third STREAM_MUSIC volume
+ *   (small centre-top % indicator), and minimize drags start from the
+ *   CENTRE third or the handle. When OFF those zones do nothing.
+ * See PlayerGesturePolicy for the zone logic.
  *
  * LAYOUT: with keepVideoPinnedWhileScrolling on (default), the video +
  * seek + chips are a fixed header and everything below scrolls on its
@@ -216,6 +223,19 @@ fun VideoPlayerScreen(
     var deviceVolume by remember { mutableStateOf(-1) }
     var swipeIndicator by remember { mutableStateOf<String?>(null) }
     var brightnessFraction by remember { mutableStateOf<Float?>(null) }
+    // v1.5 minimize drag: the video follows the finger down (live offset),
+    // past ~120 dp it minimizes on release; below that it springs back.
+    var liveDragOffsetPx by remember { mutableFloatStateOf(0f) }
+    var dragActive by remember { mutableStateOf(false) }
+    val renderedDragOffset by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (dragActive) liveDragOffsetPx else 0f,
+        animationSpec = if (dragActive) {
+            androidx.compose.animation.core.snap()
+        } else {
+            androidx.compose.animation.core.tween(180)
+        },
+        label = "minimizeDragOffset"
+    )
 
     val resolvedState = rememberUpdatedState(resolved)
     val dislikeText = dislikeStats?.let {
@@ -623,14 +643,19 @@ fun VideoPlayerScreen(
 
     val videoBox: @Composable () -> Unit = {
         Box(
-            modifier = if (fullscreenLandscape) {
-                Modifier.fillMaxSize().background(Color.Black)
+            modifier = (if (fullscreenLandscape) {
+                Modifier.fillMaxSize()
             } else {
                 Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
-                    .background(Color.Black)
-            }
+            })
+                .offset {
+                    androidx.compose.ui.unit.IntOffset(
+                        0, renderedDragOffset.roundToInt()
+                    )
+                }
+                .background(Color.Black)
         ) {
             if (controller != null && playerState.audioOnly) {
                 // Audio Only: the video picture is REMOVED — placeholder with
@@ -747,24 +772,33 @@ fun VideoPlayerScreen(
                             }
                         )
                     }
-                    .pointerInput(Unit) {
-                        // Swipe controls: LEFT third = brightness,
-                        // RIGHT third = volume, centre third = ignored.
-                        var zone = 0 // -1 left, +1 right, 0 none
+                    .pointerInput(prefs.swipeBrightnessVolumeControls) {
+                        // v1.5 gesture policy: brightness/volume swipes are
+                        // OPT-IN (default OFF). OFF: any vertical drag on
+                        // the video is the minimize drag (video follows the
+                        // finger; release past ~120 dp minimizes, otherwise
+                        // it springs back). ON: LEFT third = brightness,
+                        // RIGHT third = volume, CENTRE third = minimize drag.
+                        val swipeOn = prefs.swipeBrightnessVolumeControls
+                        var zone = 0 // -1 brightness, +1 volume, 0 none
+                        var minimizeCandidate = false
+                        var totalDrag = 0f
+                        val minimizeThreshold = 120.dp.toPx()
                         detectVerticalDragGestures(
                             onDragStart = { offset ->
-                                zone = when {
-                                    offset.x < size.width / 3f -> -1
-                                    offset.x > size.width * 2f / 3f -> 1
-                                    else -> 0
-                                }
+                                val fraction =
+                                    if (size.width > 0) offset.x / size.width else 0.5f
+                                zone = PlayerGesturePolicy.swipeZone(fraction, swipeOn)
+                                minimizeCandidate =
+                                    PlayerGesturePolicy.isMinimizeDragStart(fraction, swipeOn)
+                                totalDrag = 0f
                                 if (zone == -1 && brightnessFraction == null) {
                                     val attr = (context as? Activity)?.window?.attributes
                                     brightnessFraction =
                                         attr?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f
                                 }
                             },
-                            onVerticalDrag = { _, dragAmount ->
+                            onVerticalDrag = { change, dragAmount ->
                                 when (zone) {
                                     -1 -> {
                                         val next = SwipeControlMath.applyDrag(
@@ -800,10 +834,33 @@ fun VideoPlayerScreen(
                                             swipeIndicator = "Volume ${(nextFraction * 100).toInt()}%"
                                         }
                                     }
+                                    else -> {
+                                        if (minimizeCandidate) {
+                                            change.consume()
+                                            totalDrag += dragAmount
+                                            dragActive = true
+                                            liveDragOffsetPx = totalDrag.coerceAtLeast(0f)
+                                        }
+                                    }
                                 }
                             },
-                            onDragEnd = { zone = 0 },
-                            onDragCancel = { zone = 0 }
+                            onDragEnd = {
+                                if (minimizeCandidate && totalDrag > minimizeThreshold) {
+                                    onMinimize()
+                                }
+                                dragActive = false
+                                liveDragOffsetPx = 0f
+                                totalDrag = 0f
+                                zone = 0
+                                minimizeCandidate = false
+                            },
+                            onDragCancel = {
+                                dragActive = false
+                                liveDragOffsetPx = 0f
+                                totalDrag = 0f
+                                zone = 0
+                                minimizeCandidate = false
+                            }
                         )
                     }
             )

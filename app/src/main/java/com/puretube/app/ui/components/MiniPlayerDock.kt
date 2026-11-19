@@ -3,6 +3,7 @@ package com.puretube.app.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -37,8 +38,12 @@ import com.puretube.app.ui.theme.PureBorder
 
 /**
  * Docked mini player shown above the tab bar (v1.2): play/pause, title,
- * live progress, mute (RED when muted), Queue (N) badge button, a
- * float-to-window button, and close. Tapping the title reopens the player.
+ * live progress, mute (RED when muted), Queue (N) badge button, close,
+ * and (v1.5) the "Mini window" STATE button — highlighted when the
+ * floating mini window is visible, plain when hidden; tapping toggles
+ * the window (playback continues in the dock while it is hidden). The
+ * floating window itself has no controls any more, so this button is
+ * its show/close control. Tapping the title reopens the player.
  */
 private fun fmtDockMs(ms: Long): String {
     val totalSec = (ms / 1000).coerceAtLeast(0)
@@ -58,7 +63,9 @@ fun MiniPlayerDock(
     onToggleMute: (() -> Unit)? = null,
     onQueueClick: (() -> Unit)? = null,
     queueCount: Int = 0,
-    onFloatClick: (() -> Unit)? = null,
+    /** v1.5: floating mini window visibility + its dock toggle (state button). */
+    floatingVisible: Boolean = false,
+    onToggleFloating: (() -> Unit)? = null,
     progressFraction: Float = 0f,
     positionMs: Long = 0L,
     durationMs: Long = 0L,
@@ -70,6 +77,20 @@ fun MiniPlayerDock(
             .fillMaxWidth()
             .background(Color(0xFF0D0D0D))
             .border(1.dp, PureBorder, RoundedCornerShape(10.dp))
+            .pointerInput(Unit) {
+                // v1.5: drag UP on the dock expands back to the full player.
+                var total = 0f
+                val threshold = 60.dp.toPx()
+                androidx.compose.foundation.gestures.detectVerticalDragGestures(
+                    onDragStart = { total = 0f },
+                    onVerticalDrag = { _, amount -> total += amount },
+                    onDragEnd = {
+                        if (total < -threshold) onOpenPlayer()
+                        total = 0f
+                    },
+                    onDragCancel = { total = 0f }
+                )
+            }
             .padding(horizontal = 8.dp, vertical = 2.dp)
     ) {
         Row(
@@ -116,12 +137,26 @@ fun MiniPlayerDock(
                     Text("Queue ($queueCount)", fontSize = 12.sp, color = PureAccent)
                 }
             }
-            if (onFloatClick != null) {
-                IconButton(onClick = onFloatClick) {
+            if (onToggleFloating != null) {
+                // v1.5 state button (same family as mute): accent-filled
+                // while the mini window is VISIBLE, plain while hidden.
+                IconButton(
+                    onClick = onToggleFloating,
+                    modifier = if (floatingVisible) {
+                        Modifier.background(
+                            PureAccent.copy(alpha = 0.28f),
+                            androidx.compose.foundation.shape.CircleShape
+                        )
+                    } else Modifier
+                ) {
                     Icon(
                         imageVector = Icons.Filled.PictureInPictureAlt,
-                        contentDescription = "Floating window",
-                        tint = Color.White
+                        contentDescription = if (floatingVisible) {
+                            "Hide mini window"
+                        } else {
+                            "Show mini window"
+                        },
+                        tint = if (floatingVisible) PureAccent else Color.White
                     )
                 }
             }
