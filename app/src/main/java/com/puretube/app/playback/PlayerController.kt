@@ -4,6 +4,8 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import com.puretube.app.data.remote.extractor.FeedItem
+import com.puretube.app.data.remote.extractor.ResolvedVideoStream
+import com.puretube.app.domain.PlaybackSessionLogic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -122,8 +124,42 @@ class PlayerController {
         _state.value = _state.value.copy(
             isPlaying = player.isPlaying,
             playbackSpeed = player.playbackParameters.speed,
-            isMuted = player.volume == 0f
+            isMuted = player.volume == 0f,
+            currentVideoId = player.currentMediaItem?.mediaId.orEmpty(),
+            title = player.currentMediaItem?.mediaMetadata?.title?.toString().orEmpty()
         )
+        // Audio-only is single-source-of-truth state: re-apply it to the
+        // service player on every attach so no surface can resurrect video.
+        runCatching { PlaybackService.instance?.setAudioOnlyMode(_state.value.audioOnly) }
+    }
+
+    // ---- Playback session cache (v1.3, reopen freeze fix) ----
+
+    @Volatile
+    var sessionVideoId: String? = null
+        private set
+
+    @Volatile
+    var sessionStream: ResolvedVideoStream? = null
+        private set
+
+    fun markSessionLoaded(videoId: String, stream: ResolvedVideoStream?) {
+        sessionVideoId = videoId
+        sessionStream = stream
+    }
+
+    /** True when [videoId] is the item already loaded — attach, never re-extract. */
+    fun shouldReuseSession(videoId: String, currentMediaId: String?): Boolean =
+        PlaybackSessionLogic.shouldReuseSession(videoId, sessionVideoId) ||
+            PlaybackSessionLogic.shouldReuseSession(videoId, currentMediaId)
+
+    /** The cached stream for [videoId], or null when a different video is loaded. */
+    fun cachedStreamFor(videoId: String): ResolvedVideoStream? =
+        if (PlaybackSessionLogic.shouldReuseSession(videoId, sessionVideoId)) sessionStream else null
+
+    fun clearSession() {
+        sessionVideoId = null
+        sessionStream = null
     }
 
     fun detach() {
@@ -137,6 +173,7 @@ class PlayerController {
             p.setMediaItem(item, startPositionMs)
             p.prepare()
             p.playWhenReady = true
+            sessionVideoId = item.mediaId
         }.onFailure { e ->
             _state.value = _state.value.copy(playerError = "Could not start playback: ${e.message}")
         }

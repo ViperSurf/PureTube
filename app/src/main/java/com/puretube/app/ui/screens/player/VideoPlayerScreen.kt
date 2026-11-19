@@ -6,7 +6,12 @@ import android.content.Context
 import android.view.SurfaceView
 import android.view.View
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,6 +63,8 @@ import com.puretube.app.data.local.entity.WatchProgressEntity
 import com.puretube.app.data.remote.extractor.FeedItem
 import com.puretube.app.data.remote.extractor.ResolvedVideoStream
 import com.puretube.app.data.remote.sponsorblock.SponsorSegment
+import coil3.compose.AsyncImage
+import com.puretube.app.domain.AudioOnlySurface
 import com.puretube.app.domain.CommentFilters
 import com.puretube.app.domain.CommentItem
 import com.puretube.app.domain.SponsorRewindSuppression
@@ -84,6 +91,41 @@ private enum class StreamKind { ADAPTIVE, PROGRESSIVE, AUDIO_ONLY }
  * every failure becomes an in-player message with a fallback chain
  * (adaptive -> progressive -> audio-only) before any error is shown.
  */
+private fun fmtMs(ms: Long): String {
+    val totalSec = (ms / 1000).coerceAtLeast(0)
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val sec = totalSec % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
+}
+
+/** One state chip: label says the state in words; colour says it too. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun StateChip(
+    label: String,
+    active: Boolean,
+    activeColor: Color,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
+) {
+    val bg = if (active) activeColor else Color(0xFF1E1E1E)
+    val gesture = if (onLongClick != null) {
+        Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    } else {
+        Modifier.clickable { onClick() }
+    }
+    Box(
+        modifier = Modifier
+            .background(bg, RoundedCornerShape(16.dp))
+            .then(gesture)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Text(label, color = Color.White, fontSize = 12.sp)
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun VideoPlayerScreen(
     videoId: String,
@@ -123,6 +165,33 @@ fun VideoPlayerScreen(
     var actionStatus by remember(videoId) { mutableStateOf("") }
     var sleepEndedNote by remember(videoId) { mutableStateOf(false) }
     var serviceConnected by remember { mutableStateOf(false) }
+    // v1.3 controls: OUR HUD (chips + seek area) toggled by a single tap on
+    // the video; the PlayerView's own controller is disabled.
+    var controlsVisible by remember { mutableStateOf(true) }
+    var descriptionExpanded by remember(videoId) { mutableStateOf(false) }
+    var positionMs by remember(videoId) { mutableStateOf(0L) }
+    var durationMsState by remember(videoId) { mutableStateOf(0L) }
+    val hbStatus by app.haramBlurEngine.statusFlow.collectAsState()
+
+    // Auto-hide our controls after ~3s while playing; any tap brings them back.
+    LaunchedEffect(controlsVisible, playerState.isPlaying) {
+        if (controlsVisible && playerState.isPlaying) {
+            delay(3000L)
+            controlsVisible = false
+        }
+    }
+    // Live position for the seek area.
+    LaunchedEffect(controller) {
+        val activeController = controller ?: return@LaunchedEffect
+        while (true) {
+            delay(500L)
+            runCatching {
+                positionMs = activeController.currentPosition.coerceAtLeast(0L)
+                durationMsState = activeController.duration.coerceAtLeast(0L)
+            }
+        }
+    }
+    LaunchedEffect(Unit) { runCatching { app.haramBlurEngine.ensureInitialized() } }
 
     val sampler = remember { VideoFrameSampler(app.haramBlurEngine, scope) }
     val regions by sampler.activeBlurRegions.collectAsState()
@@ -176,6 +245,7 @@ fun VideoPlayerScreen(
             activeController.playWhenReady = true
             activeController.setPlaybackSpeed(prefs.defaultPlaybackSpeed)
             currentKind = kind
+            app.playerController.markSessionLoaded(stream.videoId, stream)
             true
         }.getOrDefault(false)
     }
@@ -200,6 +270,27 @@ fun VideoPlayerScreen(
     // Resolve the stream and start playback (runs when the controller arrives).
     LaunchedEffect(controller, videoId) {
         val activeController = controller ?: return@LaunchedEffect
+        // v1.3 reopen freeze fix: if this videoId is ALREADY the loaded item
+        // (full -> dock -> floating -> full), attach instantly from the
+        // playback-session cache — no re-extraction, no setMediaItem.
+        val currentMediaId = runCatching { activeController.currentMediaItem?.mediaId }.getOrNull()
+        if (app.playerController.shouldReuseSession(videoId, currentMediaId)) {
+            val cached = app.playerController.cachedStreamFor(videoId)
+            if (cached != null) {
+                resolved = cached
+                displayTitle = cached.title
+            }
+            status = ""
+            fatalError = null
+            // Re-apply the single-source audio-only state on this attach.
+            app.playerController.setAudioOnly(playerState.audioOnly)
+            if (prefs.sponsorBlockEnabled && segments.isEmpty()) {
+                segments = runCatching {
+                    app.sponsorBlockRepository.fetchSponsorSegments(videoId, prefs.sponsorCategories)
+                }.getOrDefault(emptyList())
+            }
+            return@LaunchedEffect
+        }
         status = "Resolving stream..."
         fatalError = null
         runCatching { app.streamRepository.configureContentCountry(prefs.contentCountry.code) }
@@ -222,6 +313,10 @@ fun VideoPlayerScreen(
                 playKind(activeController, stream, StreamKind.AUDIO_ONLY, startMs)
             status = if (started) "" else "No playable stream URL was returned for this video."
             if (started) {
+                if (prefs.launchInAudioOnly && !playerState.audioOnly) {
+                    app.playerController.setAudioOnly(true)
+                    scope.launch { app.preferences.update { it.copy(audioOnlyMode = true) } }
+                }
                 runCatching { sampler.onVideoSeekOrSourceChange(app.currentPrefs) }
                 if (prefs.sponsorBlockEnabled) {
                     segments = runCatching {
@@ -385,6 +480,10 @@ fun VideoPlayerScreen(
         }
     }
 
+    LaunchedEffect(playerState.audioOnly) {
+        if (playerState.audioOnly) runCatching { sampler.stopSampling() }
+    }
+
     // Start the frame sampler once the PlayerView surface exists.
     LaunchedEffect(playerViewRef, controller) {
         val view = playerViewRef ?: return@LaunchedEffect
@@ -436,12 +535,48 @@ fun VideoPlayerScreen(
                 .aspectRatio(16f / 9f)
                 .background(Color.Black)
         ) {
-            if (controller != null) {
+            if (controller != null && playerState.audioOnly) {
+                // Audio Only: the video picture is REMOVED — placeholder with
+                // artwork + title + label. No PlayerView exists in this
+                // state, so no surface can show video. Turning Audio Only
+                // off re-creates the PlayerView below; its player setter
+                // re-binds the video surface (the renderer was already
+                // re-enabled first by PlayerController.setAudioOnly, in
+                // that order), so the picture returns in place.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF0D0D0D))
+                ) {
+                    AsyncImage(
+                        model = resolved?.thumbnailUrl ?: "",
+                        contentDescription = displayTitle,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .background(Color(0xCC000000))
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = displayTitle.ifBlank { resolved?.title ?: "" },
+                            color = Color.White, fontSize = 14.sp,
+                            maxLines = 2, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                        Text("Audio Only", color = Color(0xFFFFB300), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            } else if (controller != null) {
                 AndroidView(
                     factory = { ctx ->
                         PlayerView(ctx).apply {
                             player = controller
-                            useController = true
+                            // OUR controls are the only controls (v1.3): the
+                            // PlayerView controller stays disabled so Bara is
+                            // never left with a controller that eats taps.
+                            useController = false
                             playerViewRef = this
                         }
                     },
@@ -467,6 +602,12 @@ fun VideoPlayerScreen(
                     .pointerInput(Unit) {
                         val marginPx = 24.dp.toPx()
                         detectTapGestures(
+                            onTap = {
+                                // Single tap toggles OUR HUD (chips + seek
+                                // area). It can never strand the user: the
+                                // next tap always brings the controls back.
+                                controlsVisible = !controlsVisible
+                            },
                             onPress = { offset ->
                                 if (offset.x < marginPx || offset.x > size.width - marginPx) {
                                     tryAwaitRelease()
@@ -504,6 +645,20 @@ fun VideoPlayerScreen(
                         )
                     }
             )
+            if (controlsVisible && controller != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .background(Color(0x99000000), androidx.compose.foundation.shape.CircleShape)
+                        .clickable { app.playerController.togglePlayPause() }
+                        .padding(14.dp)
+                ) {
+                    Text(
+                        text = if (playerState.isPlaying) "❚❚" else "▶",
+                        color = Color.White, fontSize = 22.sp
+                    )
+                }
+            }
             VideoBlurMaskOverlay(
                 regions = regions,
                 visualStyle = prefs.blurVisualStyle,
@@ -536,92 +691,116 @@ fun VideoPlayerScreen(
             }
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Button(onClick = {
-                val next = !playerState.audioOnly
-                app.playerController.setAudioOnly(next)
-                scope.launch { app.preferences.update { it.copy(audioOnlyMode = next) } }
-            }) { Text(if (playerState.audioOnly) "Audio Only: ON" else "Audio Only", fontSize = 12.sp) }
-            Button(
-                onClick = { app.playerController.toggleMute() },
-                colors = if (playerState.isMuted) {
-                    androidx.compose.material3.ButtonDefaults.buttonColors(
-                        containerColor = Color(0xFFB3261E),
-                        contentColor = Color.White
-                    )
-                } else {
-                    androidx.compose.material3.ButtonDefaults.buttonColors()
+        if (controlsVisible) {
+            // Seek / progress area (part of OUR HUD, toggled with the chips).
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp)) {
+                Slider(
+                    value = if (durationMsState > 0) {
+                        (positionMs.toFloat() / durationMsState.toFloat()).coerceIn(0f, 1f)
+                    } else 0f,
+                    onValueChange = { frac ->
+                        if (durationMsState > 0) {
+                            runCatching { controller?.seekTo((frac * durationMsState).toLong()) }
+                        }
+                    }
+                )
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    Text(fmtMs(positionMs), color = PureTextSecondary, fontSize = 11.sp)
+                    Spacer(modifier = Modifier.weight(1f))
+                    Text(fmtMs(durationMsState), color = PureTextSecondary, fontSize = 11.sp)
                 }
-            ) {
-                Text(if (playerState.isMuted) "Muted" else "Mute", fontSize = 12.sp)
             }
-            Button(onClick = {
-                if (showSpeedSlider) showSpeedSlider = false else app.playerController.cycleSpeed()
-            }) { Text("Speed ${playerState.playbackSpeed}x", fontSize = 12.sp) }
-            Box {
-                Button(onClick = { sleepMenuOpen = true }) {
-                    Text(
-                        if (playerState.sleepTimerMinutes > 0) {
+            // ONE row of state chips (wraps on narrow screens). Each chip
+            // shows its state in words + colour; tap toggles.
+            FlowRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                StateChip(
+                    label = AudioOnlySurface.soundLabel(playerState.isMuted),
+                    active = playerState.isMuted,
+                    activeColor = Color(0xFFB3261E),
+                    onClick = { app.playerController.toggleMute() }
+                )
+                StateChip(
+                    label = AudioOnlySurface.label(playerState.audioOnly),
+                    active = playerState.audioOnly,
+                    activeColor = Color(0xFFB3261E),
+                    onClick = {
+                        val next = !playerState.audioOnly
+                        app.playerController.setAudioOnly(next)
+                        scope.launch { app.preferences.update { it.copy(audioOnlyMode = next) } }
+                    }
+                )
+                Box {
+                    StateChip(
+                        label = if (playerState.sleepTimerMinutes > 0) {
                             "Sleep ${playerState.sleepTimerMinutes}m"
-                        } else "Sleep",
-                        fontSize = 12.sp
+                        } else "Sleep: Off",
+                        active = playerState.sleepTimerMinutes > 0,
+                        activeColor = PureAccent,
+                        onClick = { sleepMenuOpen = true }
                     )
-                }
-                DropdownMenu(expanded = sleepMenuOpen, onDismissRequest = { sleepMenuOpen = false }) {
-                    SleepTimerMapping.optionsMinutes.forEach { minutes ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    SleepTimerMapping.labelFor(minutes) +
-                                        if (minutes == SleepTimerMapping.coerceDefault(prefs.sleepTimerDefaultMinutes) && minutes > 0) " (default)" else ""
-                                )
-                            },
-                            onClick = {
-                                app.playerController.setSleepTimer(minutes)
-                                sleepMenuOpen = false
-                            }
-                        )
+                    DropdownMenu(expanded = sleepMenuOpen, onDismissRequest = { sleepMenuOpen = false }) {
+                        SleepTimerMapping.optionsMinutes.forEach { minutes ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        SleepTimerMapping.labelFor(minutes) +
+                                            if (minutes == SleepTimerMapping.coerceDefault(prefs.sleepTimerDefaultMinutes) && minutes > 0) " (default)" else ""
+                                    )
+                                },
+                                onClick = {
+                                    app.playerController.setSleepTimer(minutes)
+                                    sleepMenuOpen = false
+                                }
+                            )
+                        }
                     }
                 }
+                // PiP sits immediately right of the Sleep Timer chip.
+                StateChip(
+                    label = "PiP",
+                    active = false,
+                    activeColor = PureAccent,
+                    onClick = { (context as? MainActivity)?.enterPipNow() }
+                )
+                StateChip(
+                    label = "Speed ${playerState.playbackSpeed}x",
+                    active = playerState.playbackSpeed != 1.0f,
+                    activeColor = PureAccent,
+                    onClick = { app.playerController.cycleSpeed() },
+                    onLongClick = { showSpeedSlider = true }
+                )
+                StateChip(
+                    label = "⌄ Minimize",
+                    active = false,
+                    activeColor = PureAccent,
+                    onClick = { onMinimize() }
+                )
+                Text(
+                    text = "HaramBlur: ${hbStatus.mode}",
+                    color = if (hbStatus.faceModelLoaded) PureAccent else PureTextSecondary,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp)
+                )
+                // Cast: MediaRouteButton needs a FragmentActivity host. Any
+                // failure building it hides the button instead of crashing.
+                AndroidView(
+                    factory = { ctx ->
+                        runCatching {
+                            MediaRouteButton(ctx).apply {
+                                runCatching { setRouteSelector(castController.routeSelector()) }
+                            } as View
+                        }.getOrElse { View(ctx) }
+                    },
+                    modifier = Modifier.height(36.dp)
+                )
+                TextButton(onClick = onBack) { Text("Back", fontSize = 12.sp) }
             }
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "HaramBlur: ${if (prefs.protectionScope.name == "OFF") "OFF" else "ON"}",
-                color = Color.White,
-                fontSize = 12.sp
-            )
-            TextButton(onClick = { showSpeedSlider = !showSpeedSlider }) {
-                Text("Speed slider", fontSize = 12.sp)
-            }
-            TextButton(onClick = { (context as? MainActivity)?.enterPipNow() }) {
-                Text("PiP", fontSize = 12.sp)
-            }
-            // Cast: MediaRouteButton needs a FragmentActivity host. Any
-            // failure building it hides the button instead of crashing.
-            AndroidView(
-                factory = { ctx ->
-                    runCatching {
-                        MediaRouteButton(ctx).apply {
-                            runCatching { setRouteSelector(castController.routeSelector()) }
-                        } as View
-                    }.getOrElse { View(ctx) }
-                },
-                modifier = Modifier.height(36.dp)
-            )
-            TextButton(onClick = onMinimize) { Text("Minimize ⌄", fontSize = 12.sp) }
-            TextButton(onClick = onBack) { Text("Back", fontSize = 12.sp) }
         }
         if (sleepEndedNote) {
             Text(
@@ -633,11 +812,17 @@ fun VideoPlayerScreen(
         }
         if (showSpeedSlider) {
             Column(modifier = Modifier.padding(horizontal = 14.dp)) {
-                Text(
-                    "Speed ${playerState.playbackSpeed}x (0.25x - 4.0x)",
-                    color = PureTextSecondary,
-                    fontSize = 12.sp
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Speed ${playerState.playbackSpeed}x (0.25x - 4.0x)",
+                        color = PureTextSecondary,
+                        fontSize = 12.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { showSpeedSlider = false }) {
+                        Text("Done", fontSize = 12.sp)
+                    }
+                }
                 Slider(
                     value = playerState.playbackSpeed,
                     onValueChange = { app.playerController.setSpeed((it * 20).toInt() / 20f) },
@@ -712,6 +897,21 @@ fun VideoPlayerScreen(
                 }
                 if (dislikeText.isNotBlank()) {
                     Text(dislikeText, color = PureTextSecondary, fontSize = 13.sp)
+                }
+                if (prefs.enableDescription && stream.description.isNotBlank()) {
+                    TextButton(onClick = { descriptionExpanded = !descriptionExpanded }) {
+                        Text(
+                            if (descriptionExpanded) "Hide description" else "Show description",
+                            fontSize = 13.sp
+                        )
+                    }
+                    if (descriptionExpanded) {
+                        Text(
+                            stream.description,
+                            color = Color.White, fontSize = 13.sp, lineHeight = 19.sp,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+                        )
+                    }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 val isSubscribed = subscriptions.any { it.channelId == stream.uploaderId }
@@ -807,48 +1007,50 @@ fun VideoPlayerScreen(
                 }
             }
 
-            // Comments: collapsed by default, loaded on expand.
-            Spacer(modifier = Modifier.height(10.dp))
-            TextButton(onClick = {
-                commentsExpanded = !commentsExpanded
-                if (commentsExpanded && comments.isEmpty()) {
-                    scope.launch {
-                        commentsStatus = "Loading comments…"
-                        val blocked = runCatching { app.database.blocklistDao().getAll() }
-                            .getOrDefault(emptyList())
-                        app.streamRepository.fetchComments(videoId)
-                            .onSuccess { fetched ->
-                                comments = CommentFilters.filter(
-                                    comments = fetched,
-                                    blockedKeywords = blocked.filter { it.filterType == FilterType.COMMENT_KEYWORD }.map { it.pattern },
-                                    blockedUsernames = blocked.filter { it.filterType == FilterType.COMMENT_USERNAME }.map { it.pattern },
-                                    blockedChannelIds = blocked.filter { it.filterType == FilterType.COMMENT_CHANNEL_ID }.map { it.pattern },
-                                    minLikes = prefs.commentMinLikes,
-                                    maxLikes = prefs.commentMaxLikes
-                                )
-                                commentsStatus = if (comments.isEmpty()) {
-                                    "No comments to show (disabled, filtered, or unavailable)."
-                                } else ""
-                            }
-                            .onFailure { e ->
-                                commentsStatus = "Comments unavailable: ${e.message ?: "load failed"}"
-                            }
+            if (prefs.enableComments) {
+                // Comments: collapsed by default, loaded on expand.
+                Spacer(modifier = Modifier.height(10.dp))
+                TextButton(onClick = {
+                    commentsExpanded = !commentsExpanded
+                    if (commentsExpanded && comments.isEmpty()) {
+                        scope.launch {
+                            commentsStatus = "Loading comments…"
+                            val blocked = runCatching { app.database.blocklistDao().getAll() }
+                                .getOrDefault(emptyList())
+                            app.streamRepository.fetchComments(videoId)
+                                .onSuccess { fetched ->
+                                    comments = CommentFilters.filter(
+                                        comments = fetched,
+                                        blockedKeywords = blocked.filter { it.filterType == FilterType.COMMENT_KEYWORD }.map { it.pattern },
+                                        blockedUsernames = blocked.filter { it.filterType == FilterType.COMMENT_USERNAME }.map { it.pattern },
+                                        blockedChannelIds = blocked.filter { it.filterType == FilterType.COMMENT_CHANNEL_ID }.map { it.pattern },
+                                        minLikes = prefs.commentMinLikes,
+                                        maxLikes = prefs.commentMaxLikes
+                                    )
+                                    commentsStatus = if (comments.isEmpty()) {
+                                        "No comments to show (disabled, filtered, or unavailable)."
+                                    } else ""
+                                }
+                                .onFailure { e ->
+                                    commentsStatus = "Comments unavailable: ${e.message ?: "load failed"}"
+                                }
+                        }
                     }
+                }) {
+                    Text(if (commentsExpanded) "Hide comments" else "Show comments", fontSize = 13.sp)
                 }
-            }) {
-                Text(if (commentsExpanded) "Hide comments" else "Show comments", fontSize = 13.sp)
-            }
-            if (commentsExpanded) {
-                if (commentsStatus.isNotBlank()) {
-                    Text(commentsStatus, color = PureTextSecondary, fontSize = 13.sp)
-                }
-                comments.forEach { comment ->
-                    Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                        Text(
-                            "${comment.authorName} · ${if (comment.likeCount >= 0) "${comment.likeCount} likes" else ""}",
-                            color = PureAccent, fontSize = 12.sp
-                        )
-                        Text(comment.text, color = Color.White, fontSize = 13.sp, lineHeight = 18.sp)
+                if (commentsExpanded) {
+                    if (commentsStatus.isNotBlank()) {
+                        Text(commentsStatus, color = PureTextSecondary, fontSize = 13.sp)
+                    }
+                    comments.forEach { comment ->
+                        Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                            Text(
+                                "${comment.authorName} · ${if (comment.likeCount >= 0) "${comment.likeCount} likes" else ""}",
+                                color = PureAccent, fontSize = 12.sp
+                            )
+                            Text(comment.text, color = Color.White, fontSize = 13.sp, lineHeight = 18.sp)
+                        }
                     }
                 }
             }
