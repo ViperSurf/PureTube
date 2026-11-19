@@ -82,6 +82,13 @@ fun LocalPlaylistScreen(
                     color = PureAccent, fontSize = 13.sp,
                     modifier = Modifier.padding(top = 14.dp)
                 )
+                if (it.youtubePlaylistId != null) {
+                    Text(
+                        " · YouTube • synced",
+                        color = PureTextSecondary, fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 14.dp)
+                    )
+                }
             }
         }
         if (status.isNotBlank()) {

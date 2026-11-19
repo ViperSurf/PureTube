@@ -648,6 +648,7 @@ private fun PureTubeNav(
                         videoId = videoId,
                         controller = controller,
                         fullscreenLandscape = playerFullscreen,
+                        onOpenAccount = { navController.navigate("settings") },
                         onBack = { navController.popBackStack() },
                         onMinimize = {
                             floatingOpen = true

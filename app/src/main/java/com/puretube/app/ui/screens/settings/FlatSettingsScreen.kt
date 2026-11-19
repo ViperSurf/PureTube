@@ -249,6 +249,11 @@ fun FlatSettingsScreen() {
         val next = values[(prefs.defaultStartTab.ordinal + 1) % values.size]
         scope.launch { app.preferences.update { it.copy(defaultStartTab = next) } }
     }
+    fun cycleAspectMode() {
+        val values = com.puretube.app.data.local.datastore.VideoAspectMode.entries
+        val next = values[(prefs.videoAspectMode.ordinal + 1) % values.size]
+        scope.launch { app.preferences.update { it.copy(videoAspectMode = next) } }
+    }
 
     val rows = listOf(
         SettingRowDef("1. HaramBlur Protection", "Protection Scope",
@@ -560,6 +565,29 @@ fun FlatSettingsScreen() {
                 onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(keepVideoPinnedWhileScrolling = v) } } }
             )
         },
+        SettingRowDef("2. Playback, PiP & Audio", "Pause When Volume Hits Zero",
+            "When your phone's media volume reaches zero while a video is playing, PureTube pauses it. Raising the volume again never restarts playback on its own — press Play when you want it back.") {
+            Switch(
+                checked = prefs.pauseOnVolumeZero,
+                onCheckedChange = { v -> scope.launch { app.preferences.update { it.copy(pauseOnVolumeZero = v) } } }
+            )
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "Stop If Volume Stays Zero",
+            "If the media volume stays at zero continuously for this long after the volume-zero pause, playback stops completely (your position is saved first). Restarting is always manual. Never = pause only, never stop.") {
+            val options = listOf(0, 15, 30, 60, 300)
+            val labels = mapOf(0 to "Never", 15 to "15 sec", 30 to "30 sec", 60 to "1 min", 300 to "5 min")
+            CycleButton(labels[prefs.volumeZeroStopSeconds] ?: "${prefs.volumeZeroStopSeconds} sec") {
+                val idx = options.indexOf(prefs.volumeZeroStopSeconds).let { if (it < 0) 2 else it }
+                val next = options[(idx + 1) % options.size]
+                scope.launch { app.preferences.update { it.copy(volumeZeroStopSeconds = next) } }
+            }
+        },
+        SettingRowDef("2. Playback, PiP & Audio", "Video Aspect Mode",
+            "How the video picture fits the player. Fit (default) shows the whole picture undistorted with black bars where needed. Zoom fills the screen by centre-cropping the edges. Stretch fills the screen by distorting the picture. The HaramBlur overlay follows whichever rect the picture actually occupies.") {
+            CycleButton(
+                prefs.videoAspectMode.name.lowercase().replaceFirstChar { it.uppercase() }
+            ) { cycleAspectMode() }
+        },
         SettingRowDef("3. Focus & Feed Filters", "Double-Tap Search Resets",
             "Tapping the Search tab while you are already on Search clears the query, results, filter and scroll position for a fresh start.") {
             Switch(
@@ -775,8 +803,21 @@ fun FlatSettingsScreen() {
                 }
                 // v1.4 sampler diagnostics (TextureView capture path).
                 val samplerDiag by app.samplerDiagnostics.collectAsState()
+                val playerDiagState by app.playerController.state.collectAsState()
                 Spacer(modifier = Modifier.height(6.dp))
                 Text("Video sampler", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    "Sampler running: ${if (samplerDiag.samplerRunning) "Yes" else "No"}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Surface size: ${samplerDiag.surfaceWidth} x ${samplerDiag.surfaceHeight}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Video size: ${playerDiagState.videoWidth} x ${playerDiagState.videoHeight}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
                 Text(
                     "Frames sampled: ${samplerDiag.framesSampled}",
                     color = PureTextSecondary, fontSize = 13.sp
@@ -795,6 +836,10 @@ fun FlatSettingsScreen() {
                 )
                 Text(
                     "Total detections since play start: ${samplerDiag.totalDetections}",
+                    color = PureTextSecondary, fontSize = 13.sp
+                )
+                Text(
+                    "Regions drawn by overlay: ${samplerDiag.overlayRegionsDrawn}",
                     color = PureTextSecondary, fontSize = 13.sp
                 )
                 samplerDiag.lastError?.let { err ->
@@ -855,6 +900,9 @@ fun FlatSettingsScreen() {
                     }
                 }
             }
+        }
+        item(key = "account-block") {
+            AccountSectionBlock(app = app)
         }
         sections.forEach { (section, sectionRows) ->
             item(key = "header-$section") {

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.ClickableText
@@ -38,6 +39,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,9 +56,13 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -66,6 +72,8 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.mediarouter.app.MediaRouteButton
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -75,6 +83,7 @@ import com.puretube.app.MainActivity
 import com.puretube.app.PureTubeApp
 import com.puretube.app.data.WatchLaterHelper
 import com.puretube.app.data.local.datastore.ControlsVisibility
+import com.puretube.app.data.local.datastore.VideoAspectMode
 import com.puretube.app.data.local.entity.FilterType
 import com.puretube.app.data.local.entity.SubscriptionEntity
 import com.puretube.app.data.local.entity.WatchProgressEntity
@@ -92,7 +101,9 @@ import com.puretube.app.domain.LikesDisplayMath
 import com.puretube.app.domain.PlayerControlsPolicy
 import com.puretube.app.domain.SponsorRewindSuppression
 import com.puretube.app.domain.PlayerGesturePolicy
+import com.puretube.app.domain.RelatedDedupe
 import com.puretube.app.domain.SwipeControlMath
+import com.puretube.app.domain.VideoRectMath
 import kotlin.math.roundToInt
 import com.puretube.app.haramblur.video.VideoBlurMaskOverlay
 import com.puretube.app.haramblur.video.VideoFrameSampler
@@ -119,9 +130,11 @@ private enum class StreamKind { ADAPTIVE, PROGRESSIVE, AUDIO_ONLY }
  * - Single tap: toggle OUR controls (chips + seek).
  * - Double-tap left/right half: seek -/+ the configured seconds.
  * - Press-and-hold (>220 ms, away from the edges): 2x fast-forward.
- * - PRIMARY: vertical drag DOWN on the video — the video follows the
- *   finger; release past ~120 dp minimizes to dock/floating, otherwise
- *   it springs back. On the floating window / dock, drag UP expands.
+ * - PRIMARY: vertical drag DOWN on the video — the WHOLE PAGE follows
+ *   the finger as one unit (v2.0: the drag offset is applied to the page
+ *   root, not just the video box); release past ~120 dp minimizes to
+ *   dock/floating, otherwise it springs back. On the floating window /
+ *   dock, drag UP expands.
  * - Drag HANDLE PILL above the title, pulled down past ~120 dp: minimize
  *   (secondary route, always available).
  * - Brightness/volume swipes are OPT-IN (Settings → "Swipe
@@ -180,6 +193,8 @@ fun VideoPlayerScreen(
     onChannelClick: (String) -> Unit = {},
     onMinimize: () -> Unit = onBack,
     onQueueClick: () -> Unit = {},
+    /** v2.0: signed-out like/subscribe/comment taps route here (Settings → Account). */
+    onOpenAccount: () -> Unit = {},
     /** v1.5: landscape on the player route — video fills the screen, chrome hidden. */
     fullscreenLandscape: Boolean = false
 ) {
@@ -215,6 +230,17 @@ fun VideoPlayerScreen(
     var showPlaylistDialog by remember { mutableStateOf(false) }
     var actionStatus by remember(videoId) { mutableStateOf("") }
     var sleepEndedNote by remember(videoId) { mutableStateOf(false) }
+    // v2.0 account actions: -1 disliked, 0 none, 1 liked (optimistic, rolled back on failure).
+    var likeState by remember(videoId) { mutableStateOf(0) }
+    var likeBusy by remember(videoId) { mutableStateOf(false) }
+    var commentDraft by remember(videoId) { mutableStateOf("") }
+    var commentPosting by remember(videoId) { mutableStateOf(false) }
+    var related by remember(videoId) { mutableStateOf<List<FeedItem>>(emptyList()) }
+    var relatedExpanded by remember(videoId) { mutableStateOf(false) }
+    // v2.0: pixel size of the video container — drives the displayed-video rect.
+    var videoContainerSize by remember {
+        mutableStateOf(androidx.compose.ui.unit.IntSize.Zero)
+    }
     var serviceConnected by remember { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     var descriptionExpanded by remember(videoId) { mutableStateOf(false) }
@@ -264,6 +290,61 @@ fun VideoPlayerScreen(
     LaunchedEffect(prefs.controlsVisibility) {
         if (prefs.controlsVisibility == ControlsVisibility.ALWAYS_VISIBLE) controlsVisible = true
     }
+    // v2.0 IMMERSIVE fullscreen: while the landscape fullscreen player is
+    // active, hide the status bar AND nav bar (transient-by-swipe); any
+    // exit — rotate back, navigate away, dispose — restores them.
+    val view = LocalView.current
+    LaunchedEffect(fullscreenLandscape) {
+        val activity = context as? Activity ?: return@LaunchedEffect
+        val insets = WindowInsetsControllerCompat(activity.window, view)
+        if (fullscreenLandscape) {
+            insets.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            insets.hide(WindowInsetsCompat.Type.systemBars())
+        } else {
+            insets.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching {
+                val activity = context as? Activity
+                if (activity != null) {
+                    WindowInsetsControllerCompat(activity.window, view)
+                        .show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+        }
+    }
+    // v2.0 related / up next: extractor related first; when signed in the
+    // authenticated watch-next wins when it returns anything.
+    LaunchedEffect(resolved, account.signedIn) {
+        val stream = resolved ?: return@LaunchedEffect
+        relatedExpanded = !prefs.collapseRelatedByDefault
+        var items = stream.related
+        if (account.signedIn) {
+            app.innertubeClient.nextRelated(videoId)
+                .onSuccess { parsed ->
+                    if (parsed.isNotEmpty()) {
+                        items = parsed.map { p ->
+                            FeedItem(
+                                videoId = p.videoId,
+                                title = p.title,
+                                channelName = p.channelName,
+                                channelId = p.channelId,
+                                thumbnailUrl = p.thumbnailUrl,
+                                durationSeconds = p.durationSeconds,
+                                url = "https://www.youtube.com/watch?v=${p.videoId}"
+                            )
+                        }
+                    }
+                }
+        }
+        if (items.isEmpty()) {
+            items = app.streamRepository.fetchRelated(videoId).getOrDefault(emptyList())
+        }
+        related = items
+    }
     LaunchedEffect(swipeIndicator) {
         if (swipeIndicator != null) {
             delay(900L)
@@ -291,6 +372,10 @@ fun VideoPlayerScreen(
     }
     val regions by sampler.activeBlurRegions.collectAsState()
     val initialCleared by sampler.isInitialFrameCleared.collectAsState()
+    val frameVersion by sampler.frameVersion.collectAsState()
+    val account by app.accountRepository.state.collectAsState()
+    val volumeNotice by app.volumeZeroMonitor.notice.collectAsState()
+    val density = LocalDensity.current
     val castController = remember { CastRouterController(context) }
     val subscriptions by app.database.subscriptionDao().observeAll()
         .collectAsState(initial = emptyList())
@@ -573,9 +658,13 @@ fun VideoPlayerScreen(
 
     // Start the frame sampler once the TextureView exists. Exempt
     // channels are skipped via the provider (reads the resolved stream).
-    LaunchedEffect(textureViewRef, controller) {
+    // v2.0: keyed on audioOnly too — toggling audio-only OFF recreates the
+    // TextureView, and the sampler must restart with it (previously the
+    // stop-on-audio-only had no matching restart path here).
+    LaunchedEffect(textureViewRef, controller, playerState.audioOnly) {
         val view = textureViewRef ?: return@LaunchedEffect
         val activeController = controller ?: return@LaunchedEffect
+        if (playerState.audioOnly) return@LaunchedEffect
         runCatching {
             sampler.startSampling(
                 textureView = view,
@@ -642,6 +731,22 @@ fun VideoPlayerScreen(
     // ------------------------------------------------------------------
 
     val videoBox: @Composable () -> Unit = {
+        // v2.0: the displayed-video rect for the active aspect mode. The
+        // TextureView is laid out at EXACTLY this rect, so the sampler
+        // bitmap is in video-frame space and blur regions map through it.
+        val displayedRect = if (
+            videoContainerSize.width > 0 && videoContainerSize.height > 0
+        ) {
+            VideoRectMath.displayedVideoRect(
+                containerW = videoContainerSize.width.toFloat(),
+                containerH = videoContainerSize.height.toFloat(),
+                videoW = playerState.videoWidth,
+                videoH = playerState.videoHeight,
+                mode = prefs.videoAspectMode
+            )
+        } else {
+            null
+        }
         Box(
             modifier = (if (fullscreenLandscape) {
                 Modifier.fillMaxSize()
@@ -650,11 +755,8 @@ fun VideoPlayerScreen(
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
             })
-                .offset {
-                    androidx.compose.ui.unit.IntOffset(
-                        0, renderedDragOffset.roundToInt()
-                    )
-                }
+                .onSizeChanged { videoContainerSize = it }
+                .clipToBounds()
                 .background(Color.Black)
         ) {
             if (controller != null && playerState.audioOnly) {
@@ -691,6 +793,25 @@ fun VideoPlayerScreen(
                 // into it via Player.setVideoTextureView; the sampler
                 // reads frames back with getBitmap(). Cleared on release
                 // so the floating window / dock surfaces can take over.
+                // v2.0: sized/positioned to the displayed-video rect for
+                // the active aspect mode (FIT letterbox / ZOOM crop /
+                // STRETCH fill) instead of always filling the container —
+                // the picture is no longer stretched by default.
+                val textureModifier = if (displayedRect != null) {
+                    Modifier
+                        .offset {
+                            androidx.compose.ui.unit.IntOffset(
+                                displayedRect.left.roundToInt(),
+                                displayedRect.top.roundToInt()
+                            )
+                        }
+                        .size(
+                            with(density) { displayedRect.width.toDp() },
+                            with(density) { displayedRect.height.toDp() }
+                        )
+                } else {
+                    Modifier.fillMaxSize()
+                }
                 AndroidView(
                     factory = { ctx ->
                         TextureView(ctx).also { tv ->
@@ -713,7 +834,7 @@ fun VideoPlayerScreen(
                         runCatching { controller?.clearVideoTextureView(view) }
                         if (textureViewRef === view) textureViewRef = null
                     },
-                    modifier = Modifier.fillMaxSize()
+                    modifier = textureModifier
                 )
             } else {
                 Text(
@@ -882,8 +1003,25 @@ fun VideoPlayerScreen(
                 regions = regions,
                 visualStyle = prefs.blurVisualStyle,
                 initialFrameCleared = initialCleared,
-                zeroFlashEnabled = prefs.zeroFlashSafePreBlur
+                zeroFlashEnabled = prefs.zeroFlashSafePreBlur,
+                videoRect = displayedRect,
+                pixelFrameProvider = { sampler.pixelFrame },
+                frameVersion = frameVersion,
+                onRegionsDrawn = { count -> sampler.noteOverlayRegionsDrawn(count) }
             )
+            volumeNotice?.let { msg ->
+                // v2.0 volume-zero rule notice: in-player text, not a popup.
+                Text(
+                    text = msg,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 54.dp)
+                        .background(Color(0xCC000000))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
             if (holdingFastForward) {
                 Text(
                     text = "2.0x Fast Forward",
@@ -923,7 +1061,10 @@ fun VideoPlayerScreen(
         }
     }
 
-    val controlsArea: @Composable () -> Unit = {
+    // v2.0: seek and chips are separate blocks so the fullscreen layout
+    // can stack them in non-overlapping bands (chips ABOVE, seek slider
+    // pinned to the very bottom edge); portrait keeps slider-then-chips.
+    val seekBlock: @Composable () -> Unit = {
         if (controlsVisible) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp)) {
                 Slider(
@@ -942,6 +1083,11 @@ fun VideoPlayerScreen(
                     Text(fmtMs(durationMsState), color = PureTextSecondary, fontSize = 11.sp)
                 }
             }
+        }
+    }
+
+    val chipsBlock: @Composable () -> Unit = {
+        if (controlsVisible) {
             FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1031,6 +1177,19 @@ fun VideoPlayerScreen(
                     }
                 )
                 StateChip(
+                    label = "Aspect: " + prefs.videoAspectMode.name.lowercase()
+                        .replaceFirstChar { it.uppercase() },
+                    active = prefs.videoAspectMode != VideoAspectMode.FIT,
+                    activeColor = PureAccent,
+                    onClick = {
+                        val values = VideoAspectMode.entries
+                        val next = values[(prefs.videoAspectMode.ordinal + 1) % values.size]
+                        scope.launch {
+                            app.preferences.update { it.copy(videoAspectMode = next) }
+                        }
+                    }
+                )
+                StateChip(
                     label = "⌄ Minimize",
                     active = false,
                     activeColor = PureAccent,
@@ -1051,6 +1210,9 @@ fun VideoPlayerScreen(
                 TextButton(onClick = onBack) { Text("Back", fontSize = 12.sp) }
             }
         }
+    }
+
+    val controlsExtras: @Composable () -> Unit = {
         if (sleepEndedNote) {
             Text(
                 text = "Sleep timer ended",
@@ -1078,6 +1240,73 @@ fun VideoPlayerScreen(
                     valueRange = 0.25f..4.0f
                 )
             }
+        }
+    }
+
+    /** Portrait order: seek, chips, extras. Fullscreen composes its own stack. */
+    val controlsArea: @Composable () -> Unit = {
+        seekBlock()
+        chipsBlock()
+        controlsExtras()
+    }
+
+    // ---- v2.0 account actions: like / dislike (optimistic + rollback) ----
+
+    fun onLikeClick() {
+        if (!account.signedIn) {
+            actionStatus = "Sign in to like videos — opening Settings → Account"
+            onOpenAccount()
+            return
+        }
+        if (likeBusy) return
+        val previous = likeState
+        val next = if (previous == 1) 0 else 1
+        likeState = next
+        likeBusy = true
+        scope.launch {
+            val result = if (next == 1) {
+                app.innertubeClient.like(videoId)
+            } else {
+                app.innertubeClient.removeLike(videoId)
+            }
+            likeBusy = false
+            result
+                .onSuccess {
+                    actionStatus = if (next == 1) "Liked on YouTube" else "Like removed"
+                }
+                .onFailure { e ->
+                    likeState = previous
+                    actionStatus = e.message ?: "Like failed"
+                }
+        }
+    }
+
+    fun onDislikeClick() {
+        if (!account.signedIn) {
+            actionStatus = "Sign in to rate videos — opening Settings → Account"
+            onOpenAccount()
+            return
+        }
+        if (likeBusy) return
+        val previous = likeState
+        val next = if (previous == -1) 0 else -1
+        likeState = next
+        likeBusy = true
+        scope.launch {
+            val result = if (next == -1) {
+                app.innertubeClient.dislike(videoId)
+            } else {
+                app.innertubeClient.removeLike(videoId)
+            }
+            likeBusy = false
+            result
+                .onSuccess {
+                    actionStatus = if (next == -1) "Disliked on YouTube" else "Dislike removed"
+                }
+                .onFailure { e ->
+                    likeState = previous
+                    actionStatus = e.message ?: "Dislike failed"
+                }
         }
     }
 
@@ -1249,6 +1478,21 @@ fun VideoPlayerScreen(
                 ) {
                     Button(onClick = {
                         scope.launch {
+                            // v2.0: signed in -> the real YouTube subscribe
+                            // happens first and wins; the local row follows
+                            // it. Signed out -> local subscription only.
+                            if (account.signedIn) {
+                                val remote = if (isSubscribed) {
+                                    app.innertubeClient.unsubscribe(stream.uploaderId)
+                                } else {
+                                    app.innertubeClient.subscribe(stream.uploaderId)
+                                }
+                                if (remote.isFailure) {
+                                    actionStatus = remote.exceptionOrNull()?.message
+                                        ?: "YouTube subscribe failed"
+                                    return@launch
+                                }
+                            }
                             runCatching {
                                 if (isSubscribed) {
                                     app.database.subscriptionDao().delete(stream.uploaderId)
@@ -1279,6 +1523,35 @@ fun VideoPlayerScreen(
                         app.playerController.enqueueWithNotice(feedItem)
                         actionStatus = "Added to queue"
                     }) { Text("Queue (${queue.size})", fontSize = 12.sp) }
+                }
+                // v2.0: real Like / Dislike when signed in (optimistic,
+                // rolled back on failure); signed-out taps route to sign-in.
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(top = 6.dp)
+                ) {
+                    val likeCount = dislikeStats?.likes?.takeIf { it >= 0 }
+                        ?: stream.likeCount.takeIf { it >= 0 }
+                    StateChip(
+                        label = "👍 Like" + (likeCount?.let { " ($it)" } ?: ""),
+                        active = likeState == 1,
+                        activeColor = PureAccent,
+                        onClick = { onLikeClick() }
+                    )
+                    val dislikeCount = dislikeStats?.dislikes?.takeIf { it >= 0 }
+                    StateChip(
+                        label = "👎 Dislike" + (dislikeCount?.let { " ($it)" } ?: ""),
+                        active = likeState == -1,
+                        activeColor = Color(0xFFB3261E),
+                        onClick = { onDislikeClick() }
+                    )
+                    if (!account.signedIn) {
+                        Text(
+                            "Sign in to like",
+                            color = PureTextSecondary, fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TextButton(onClick = { showPlaylistDialog = true }) {
@@ -1394,6 +1667,58 @@ fun VideoPlayerScreen(
                     Text(if (commentsExpanded) "Hide comments" else "Show comments", fontSize = 13.sp)
                 }
                 if (commentsExpanded) {
+                    // v2.0: comment composer — real posting when signed in.
+                    if (account.signedIn) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 6.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = commentDraft,
+                                onValueChange = { commentDraft = it },
+                                placeholder = { Text("Add a comment…", fontSize = 13.sp) },
+                                singleLine = false,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                enabled = commentDraft.isNotBlank() && !commentPosting,
+                                onClick = {
+                                    val text = commentDraft.trim()
+                                    if (text.isBlank()) return@Button
+                                    commentPosting = true
+                                    scope.launch {
+                                        app.innertubeClient.createComment(videoId, text)
+                                            .onSuccess {
+                                                comments = listOf(
+                                                    CommentItem(
+                                                        id = "",
+                                                        authorName = account.name
+                                                            .ifBlank { "You" },
+                                                        authorChannelId = "",
+                                                        text = text,
+                                                        likeCount = 0
+                                                    )
+                                                ) + comments
+                                                commentDraft = ""
+                                                actionStatus = "Comment posted"
+                                            }
+                                            .onFailure { e ->
+                                                actionStatus = e.message
+                                                    ?: "Comment failed to post"
+                                            }
+                                        commentPosting = false
+                                    }
+                                }
+                            ) { Text("Post", fontSize = 12.sp) }
+                        }
+                    } else {
+                        TextButton(onClick = onOpenAccount) {
+                            Text("Sign in to comment", fontSize = 12.sp)
+                        }
+                    }
                     if (commentsStatus.isNotBlank()) {
                         Text(commentsStatus, color = PureTextSecondary, fontSize = 13.sp)
                     }
@@ -1468,13 +1793,53 @@ fun VideoPlayerScreen(
                     }
                 }
             }
-            if (prefs.collapseRelatedByDefault) {
-                Text(
-                    text = "Related videos stay collapsed by your Focus settings.",
-                    color = PureTextSecondary,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 10.dp)
-                )
+            // v2.0: Up Next / Related — extractor related streams, or the
+            // authenticated watch-next when signed in. Deduped against the
+            // current video and everything already queued.
+            val visibleRelated = RelatedDedupe.dedupe(
+                related, videoId, queue.map { it.videoId }.toSet()
+            )
+            if (visibleRelated.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Up next / Related (${visibleRelated.size})",
+                        color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (prefs.collapseRelatedByDefault) {
+                        TextButton(onClick = { relatedExpanded = !relatedExpanded }) {
+                            Text(if (relatedExpanded) "Hide" else "Show", fontSize = 12.sp)
+                        }
+                    }
+                }
+                if (relatedExpanded) {
+                    visibleRelated.forEach { item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { onVideoClick(item.videoId) }) {
+                                Text(
+                                    item.title, fontSize = 13.sp, maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                            }
+                            Spacer(modifier = Modifier.weight(1f))
+                            TextButton(onClick = {
+                                app.playerController.enqueueWithNotice(item)
+                                actionStatus = "Added to queue"
+                            }) { Text("Queue", fontSize = 12.sp) }
+                        }
+                        if (item.channelName.isNotBlank()) {
+                            Text(
+                                item.channelName,
+                                color = PureTextSecondary, fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 12.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1482,18 +1847,54 @@ fun VideoPlayerScreen(
     // ------------------------------------------------------------------
     // Layout branch: landscape fullscreen vs sticky (pinned) header vs
     // single-scroll page. The same pieces are used — no duplicated content.
+    //
+    // v2.0 drag: the minimize-drag offset is applied HERE, to the whole
+    // page root, so video + title + chips + description/comments all
+    // translate together as one rigid unit (previously only the video
+    // box moved, sliding over/under the rest of the page).
     // ------------------------------------------------------------------
+    val pageDragModifier = Modifier.offset {
+        androidx.compose.ui.unit.IntOffset(0, renderedDragOffset.roundToInt())
+    }
     if (fullscreenLandscape) {
-        // v1.5: video fills the screen; seek + chips overlay at the
-        // bottom when visible (tap toggles them, same as portrait).
+        // v2.0 fullscreen stack, in separate bands so nothing overlaps:
+        // title/author top-left, centre play (inside videoBox), chips row
+        // above, seek slider pinned to the very bottom edge.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .then(pageDragModifier)
         ) {
             videoBox()
-            Box(modifier = Modifier.align(Alignment.BottomCenter)) {
-                controlsArea()
+            if (controlsVisible) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 16.dp, top = 12.dp, end = 16.dp)
+                ) {
+                    Text(
+                        text = displayTitle.ifBlank { resolved?.title ?: "" },
+                        color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                    resolved?.let { stream ->
+                        Text(
+                            text = stream.uploaderName,
+                            color = PureAccent, fontSize = 12.sp
+                        )
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                ) {
+                    chipsBlock()
+                    controlsExtras()
+                    seekBlock()
+                }
             }
         }
     } else if (prefs.keepVideoPinnedWhileScrolling) {
@@ -1501,6 +1902,7 @@ fun VideoPlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .then(pageDragModifier)
         ) {
             videoBox()
             controlsArea()
@@ -1517,6 +1919,7 @@ fun VideoPlayerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .then(pageDragModifier)
                 .verticalScroll(rememberScrollState())
         ) {
             videoBox()

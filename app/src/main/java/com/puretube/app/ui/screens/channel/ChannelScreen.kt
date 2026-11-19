@@ -135,6 +135,22 @@ fun ChannelScreen(
                     }
                     Button(onClick = {
                     scope.launch {
+                        // v2.0: signed in -> real YouTube subscribe first
+                        // (it wins); the local row follows. Signed out ->
+                        // local subscription only.
+                        val accountState = app.accountRepository.state.value
+                        if (accountState.signedIn) {
+                            val remote = if (isSubscribed) {
+                                app.innertubeClient.unsubscribe(channel.channelId)
+                            } else {
+                                app.innertubeClient.subscribe(channel.channelId)
+                            }
+                            if (remote.isFailure) {
+                                status = remote.exceptionOrNull()?.message
+                                    ?: "YouTube subscribe failed"
+                                return@launch
+                            }
+                        }
                         runCatching {
                             if (isSubscribed) {
                                 app.database.subscriptionDao().delete(channel.channelId)

@@ -274,6 +274,12 @@ fun LibraryScreen(
                                 " · ${playlist.visibility.name}",
                                 color = PureAccent, fontSize = 12.sp
                             )
+                            if (playlist.youtubePlaylistId != null) {
+                                Text(
+                                    " · YouTube • synced",
+                                    color = PureTextSecondary, fontSize = 12.sp
+                                )
+                            }
                         }
                     }
                 }
