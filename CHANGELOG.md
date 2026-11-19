@@ -1,5 +1,38 @@
 # Changelog
 
+## v2.1.0 — 2026-11-19
+
+Field-report round: the in-video HaramBlur freeze is fixed at the root, gesture arbitration stops volume drags from seeking, sign-in no longer needs a computer, sync runs both ways, and captions/audio tracks/language all work.
+
+### HaramBlur video — freeze fixed
+- **Root cause:** the overlay repainted only when the composable recomposed (layout/resize events). Three compounding defects: TFLite interpreters with a GPU delegate were invoked from arbitrary background threads (the native side can wedge silently, stalling the sampler behind its mutex — a sample squeezed out on layout changes, then nothing); frame capture ran off the main thread; and the overlay consumed three separate flows plus an in-place-mutated bitmap passed as a parameter, which Compose cannot observe.
+- **Fix:** the engine is CPU-only with all inference pinned to one dedicated thread; capture happens on the main thread; and the sampler now publishes ONE immutable snapshot (sequence + regions + pixel-frame copy) as a StateFlow that the overlay collects as Compose state, with the Canvas keyed to the sample sequence — every new sample redraws. Settings → Diagnostics shows **sampled vs drawn sequence** plus last-sample duration, so any future freeze is visible as numbers.
+- **Detection mode:** Smart (targeted regions, default) or **Full screen** — if anything is detected, the entire frame is pixelated until clear (same hysteresis).
+- **Blur strength:** Light / Medium / Strong (new default) / Maximum — materially coarser mosaic blocks and heavier frosted opacity per level, applied to thumbnails, video and the shield alike.
+
+### Gestures + volume
+- **Arbitration fix:** one gesture classifier now owns all player touch. A vertical drag can no longer also register as a hold (2x speed) or as double-tap seeks — the v2.0 layering caused ~10s jumps while changing volume. Double-tap seek needs two clean taps; hold-2x needs a stationary press.
+- **Volume-zero options:** "When volume hits zero" = Pause only (default) / Rewind 5s / 10s / 15s / Rewind + pause; "Resume when volume returns" (default OFF — the original rule) gates an automatic resume that only ever applies to rule-paused videos. Stop-if-stays-zero unchanged.
+
+### Player / UI cleanup
+- The duplicate **Back** button is gone from the player controls (Minimize + system back remain); controls end at Minimize.
+- **Show title in fullscreen** setting (default ON); fullscreen title, chips and seek rows are padded with display-cutout/safe insets so seek time labels are no longer cut on curved-edge phones.
+- **History** has its own display settings (layout + thumbnail scale, default List + Compact) — no more full-size cards in History.
+- Settings rows rebuilt on one uniform geometry (label left half, control end-aligned right half) across all sections.
+- **Video info line** under the title: upload date (absolute + relative), compact view count, like/dislike honouring the Numbers/Percentage/Both preference.
+- **Share** button in the player action row and the video ⋮ menu (Android share sheet, title + watch URL).
+
+### Language
+- The app-language setting **actually applies now** (it was stored and never used): framework per-app locales on Android 13+, configuration wrap + recreate on older versions. Core UI strings (bottom navigation, Settings headings, player buttons) are translated for **العربية, Español, Français, Türkçe, اردو**; long-tail help text and diagnostics stay English.
+
+### Captions + audio tracks
+- **Captions:** the player's Captions menu lists the video's subtitle tracks (auto-generated labelled); cues render as a styled overlay without interrupting playback, and the choice is remembered. New Settings section **8. Captions**: text size, colour, background, bold.
+- **Audio:** the Audio menu lists the available audio tracks (language + quality) and switches at the current position; the preferred-audio-language setting is honoured on load. Single-track videos show the sole option.
+
+### Sign-in + sync
+- **Device-code sign-in** replaces the WebView route (which Google blocks): the app shows a short code, you approve at youtube.com/activate in any browser — no computer or DevTools needed — and the app stores the OAuth refresh token (Keystore-encrypted) and signs requests with Bearer tokens. Paste-cookies remains as a fallback.
+- **Two-way sync:** Sync now pulls (as before) and then **pushes** local playlists — creating missing ones on YouTube and adding only the videos they're missing. A **Push to YouTube** action sits on each local playlist. Watching while signed in registers the video in your YouTube history (best effort).
+
 ## v2.0.0 — 2026-11-18
 
 YouTube account sign-in (like/dislike/subscribe/comment/sync), the volume-zero rule, immersive fullscreen with aspect modes, whole-page drag, and the in-video HaramBlur audit fix.
